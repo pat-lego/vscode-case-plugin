@@ -1,0 +1,31 @@
+id: hot-endpoint
+name: Hot Endpoint / Request Flood
+description: >
+  A disproportionate number of threads are executing the same endpoint or
+  stack path, indicating a request flood, missing cache, or runaway client.
+version: "1.0"
+
+conditions:
+  - field: dominantFingerprintCount
+    operator: gte
+    value: 50
+    description: "50+ threads executing identical stack"
+  - field: dominantFingerprintRatio
+    operator: gte
+    value: 0.25
+    description: "25%+ of threads on same fingerprint"
+
+indicators:
+  - "High volume of identical requests consuming thread pool"
+  - "Possible missing or broken cache layer"
+  - "Possible runaway client or polling loop"
+
+nextSteps:
+  - "Check for recent deploys to this service"
+  - "Verify cache layer is active and healthy"
+  - "Fetch Splunk: endpoint error rate ±5min"
+  - "Check for a specific client IP generating volume"
+
+relatedSignatures:
+  - missing-cache
+  - thread-pool-exhaustion

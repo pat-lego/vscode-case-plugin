@@ -1,0 +1,31 @@
+id: full-gc-pause
+name: Full GC Pause / Stop-the-World
+description: >
+  The JVM is spending significant time in garbage collection, causing
+  application threads to be suspended (stop-the-world pause).
+version: "1.0"
+
+conditions:
+  - field: threadCountAnomaly
+    operator: eq
+    value: 1
+    description: "Abnormally high thread count observed"
+  - field: waitingThreadCount
+    operator: gte
+    value: 50
+    description: "50+ threads in WAITING state"
+
+indicators:
+  - "JVM stop-the-world GC pause"
+  - "High heap pressure causing frequent full collections"
+  - "Application effectively frozen during GC"
+
+nextSteps:
+  - "Fetch Splunk: GC pause log entries ±5min"
+  - "Check heap usage metrics around the incident window"
+  - "Review recent deploy for memory leak or large object allocation"
+  - "Consider heap dump if problem is recurring"
+
+relatedSignatures:
+  - memory-leak
+  - thread-pool-exhaustion

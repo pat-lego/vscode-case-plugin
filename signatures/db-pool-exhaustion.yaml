@@ -1,0 +1,31 @@
+id: db-pool-exhaustion
+name: Database Connection Pool Exhaustion
+description: >
+  Multiple threads are blocked waiting to acquire a database connection,
+  indicating the connection pool is exhausted.
+version: "1.0"
+
+conditions:
+  - field: blockedThreadCount
+    operator: gte
+    value: 10
+    description: "10+ threads in BLOCKED state"
+  - field: persistentBlockedMonitors
+    operator: gte
+    value: 1
+    description: "Blocked monitor persists across dumps"
+
+indicators:
+  - "DB connection pool exhausted"
+  - "Threads queued waiting for available connection"
+  - "Upstream slowness may be amplifying pool pressure"
+
+nextSteps:
+  - "Check DB pool configuration (max connections)"
+  - "Fetch Splunk: connection timeout errors ±5min"
+  - "Check DB server for slow queries or lock contention"
+  - "Look for upstream service calls holding connections open"
+
+relatedSignatures:
+  - hot-endpoint
+  - slow-query

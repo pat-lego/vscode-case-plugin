@@ -1,0 +1,30 @@
+id: deadlock
+name: Thread Deadlock
+description: >
+  Two or more threads are blocked waiting on monitors held by each other,
+  creating a circular dependency that cannot resolve without intervention.
+version: "1.0"
+
+conditions:
+  - field: persistentBlockedMonitors
+    operator: gte
+    value: 2
+    description: "Multiple monitors persistently blocked across dumps"
+  - field: blockedThreadCount
+    operator: gte
+    value: 2
+    description: "Multiple threads in BLOCKED state"
+
+indicators:
+  - "Circular lock dependency detected"
+  - "Affected threads will not recover without restart"
+  - "Root cause is usually an ordering inconsistency in lock acquisition"
+
+nextSteps:
+  - "Identify the circular wait chain in the thread dump"
+  - "No Splunk needed — deadlock is self-evident from dumps"
+  - "Restart affected service to restore operation"
+  - "File a bug: lock acquisition order must be made consistent"
+
+relatedSignatures:
+  - db-pool-exhaustion
