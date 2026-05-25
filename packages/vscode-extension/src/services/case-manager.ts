@@ -151,6 +151,14 @@ export class CaseManager {
     this.save(caseId);
   }
 
+  updateTitle(caseId: string, title: string) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+    session.meta.title = title;
+    session.meta.updatedAt = new Date();
+    this.save(caseId);
+  }
+
   resolveCase(caseId: string, resolution: string, resolvedBy: string) {
     const session = this.sessions.get(caseId);
     if (!session) return;

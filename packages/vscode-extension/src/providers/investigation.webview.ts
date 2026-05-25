@@ -190,6 +190,10 @@ export class InvestigationWebview {
         this.caseManager.updateNotes(caseId, String(msg.notes ?? ''));
         break;
 
+      case 'saveTitle':
+        this.caseManager.updateTitle(caseId, String(msg.title ?? ''));
+        break;
+
       case 'reopenCase':
         this.caseManager.reopenCase(caseId);
         panel.webview.postMessage({ type: 'statusChanged', status: 'open' });
@@ -398,11 +402,20 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .ctx-item:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
 .ctx-danger{color:var(--vscode-errorForeground)!important}
 .ctx-sep{height:1px;background:var(--vscode-menu-separatorBackground,var(--vscode-panel-border));margin:3px 0}
+.collapse-btn{background:none;border:none;color:var(--vscode-descriptionForeground);cursor:pointer;font-size:13px;padding:0 4px;line-height:1;border-radius:2px;flex-shrink:0;opacity:.55;font-weight:400}
+.collapse-btn:hover{opacity:1;background:var(--vscode-list-hoverBackground)}
+.col.collapsed{width:28px!important;flex:none!important;overflow:hidden!important}
+.col.collapsed>*:not(.col-header){display:none!important}
+.col.collapsed .col-header>*:not(.collapse-btn){display:none!important}
+.col.collapsed .col-header{justify-content:center;cursor:default}
+#case-title[contenteditable]{outline:none;cursor:text;border-bottom:1px solid transparent;padding:0 2px;border-radius:1px;font-weight:inherit}
+#case-title[contenteditable]:hover{border-bottom-color:var(--vscode-descriptionForeground)}
+#case-title[contenteditable]:focus{border-bottom-color:var(--vscode-focusBorder)}
 </style>
 </head>
 <body>
 <div class="header">
-  <h2>${caseId} — ${title}</h2>
+  <h2>${caseId} — <span id="case-title" contenteditable="true" spellcheck="false">${title}</span></h2>
   <div class="header-right">
     <div class="bridge"><div class="dot" id="dot"></div><span id="bridge-lbl">Disconnected</span></div>
     <button class="btn" id="resolve-btn">Resolve</button>
@@ -413,6 +426,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
   <div class="col evidence" id="col-evidence">
     <div class="col-header" draggable="true" data-col="evidence">
       <span>Evidence<span class="col-drag-hint">drag to reorder</span></span>
+      <button class="collapse-btn" data-collapse="evidence" title="Collapse">&#x2039;</button>
     </div>
     <div class="col-body">
       <button class="add-btn" id="add-evidence-btn">&#xff0b; Add evidence files</button>
@@ -432,6 +446,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
     <div class="col-header" draggable="true" data-col="notes">
       <span>Notes<span class="col-drag-hint">drag to reorder</span></span>
       <span class="save-indicator" id="save-indicator">Saved</span>
+      <button class="collapse-btn" data-collapse="notes" title="Collapse">&#x2039;</button>
     </div>
     <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here&#x2026;&#10;&#10;What did you observe? What have you tried? What&#x27;s the current hypothesis?"></textarea>
   </div>
@@ -439,6 +454,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
   <div class="col viewer" id="col-viewer">
     <div class="col-header" draggable="true" data-col="viewer">
       <span>Viewer<span class="col-drag-hint">drag to reorder</span></span>
+      <button class="collapse-btn" data-collapse="viewer" title="Collapse">&#x2039;</button>
     </div>
     <div class="viewer-body" id="viewer-body">
       <div class="viewer-empty-state" id="viewer-empty-state">Click an evidence item to open it here.<br>Each item opens in its own pane.</div>
@@ -474,6 +490,7 @@ let saveTimer = null;
 // ── Layout ────────────────────────────────────────────────────
 const MIN_W = {evidence: 110, notes: 140, viewer: 200};
 let colOrder = ['evidence', 'notes', 'viewer'];
+var collapsed = {};
 const handles = [document.getElementById('handle-0'), document.getElementById('handle-1')];
 
 function getCol(id) { return document.getElementById('col-' + id); }
@@ -491,8 +508,31 @@ function applyOrder() {
 
 function saveLayout() {
   const widths = {};
-  colOrder.forEach(function(id) { widths[id] = getCol(id).getBoundingClientRect().width; });
-  vscode.setState({ colOrder: colOrder, widths: widths });
+  colOrder.forEach(function(id) {
+    if (!collapsed[id]) widths[id] = getCol(id).getBoundingClientRect().width;
+  });
+  vscode.setState({ colOrder: colOrder, widths: widths, collapsed: collapsed });
+}
+
+function applyCollapseState(colId) {
+  var col = getCol(colId);
+  var hdr = col ? col.querySelector('.col-header') : null;
+  var btn = col ? col.querySelector('.collapse-btn') : null;
+  if (collapsed[colId]) {
+    if (col) { col.classList.add('collapsed'); col.style.width = ''; col.style.flex = ''; }
+    if (btn) btn.textContent = '›'; // ›
+    if (hdr) hdr.removeAttribute('draggable');
+  } else {
+    if (col) col.classList.remove('collapsed');
+    if (btn) btn.textContent = '‹'; // ‹
+    if (hdr) hdr.setAttribute('draggable', 'true');
+  }
+}
+
+function toggleCollapse(colId) {
+  collapsed[colId] = !collapsed[colId];
+  applyCollapseState(colId);
+  saveLayout();
 }
 
 function loadLayout() {
@@ -508,6 +548,14 @@ function loadLayout() {
       const w = s.widths[id] || (id === 'viewer' ? s.widths['findings'] : undefined);
       if (w && w > 0) { el.style.flex = 'none'; el.style.width = w + 'px'; }
     });
+  }
+  if (s.collapsed) {
+    for (var cid in s.collapsed) {
+      if (s.collapsed[cid]) {
+        collapsed[cid] = true;
+        applyCollapseState(cid);
+      }
+    }
   }
 }
 
@@ -596,6 +644,14 @@ document.querySelectorAll('.col-header[draggable]').forEach(function(header) {
   });
 });
 
+// ── Collapse delegation ───────────────────────────────
+document.getElementById('workspace').addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest && e.target.closest('.collapse-btn');
+  if (!btn || !btn.dataset || !btn.dataset.collapse) return;
+  e.stopPropagation();
+  toggleCollapse(btn.dataset.collapse);
+});
+
 try { loadLayout(); } catch(e) { /* stale state — ignore, use defaults */ }
 
 // ── Messaging ─────────────────────────────────────────────────
@@ -618,15 +674,34 @@ window.addEventListener('message', function(evt) {
   else if (m.type === 'evidenceView') renderViewerContent(m.paneId, m.id, m.name, m.content, m.contentType);
 });
 
+function doSaveNotes() {
+  send('saveNotes', { notes: document.getElementById('notes-area').value });
+  var ind = document.getElementById('save-indicator');
+  if (ind) { ind.classList.add('show'); setTimeout(function() { ind.classList.remove('show'); }, 1200); }
+}
+
 document.getElementById('notes-area').addEventListener('input', function() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(function() {
-    send('saveNotes', { notes: document.getElementById('notes-area').value });
-    var ind = document.getElementById('save-indicator');
-    ind.classList.add('show');
-    setTimeout(function() { ind.classList.remove('show'); }, 1200);
-  }, 500);
+  saveTimer = setTimeout(doSaveNotes, 150);
 });
+
+document.getElementById('notes-area').addEventListener('blur', function() {
+  clearTimeout(saveTimer);
+  doSaveNotes();
+});
+
+// ── Editable case title ───────────────────────────────
+var caseTitleEl = document.getElementById('case-title');
+if (caseTitleEl) {
+  caseTitleEl.addEventListener('blur', function() {
+    var t = this.textContent.trim();
+    if (t) send('saveTitle', { title: t });
+  });
+  caseTitleEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
+    if (e.key === 'Escape') { this.blur(); }
+  });
+}
 
 function setBridge(on) {
   document.getElementById('dot').className = 'dot'+(on?' on':'');

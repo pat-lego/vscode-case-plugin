@@ -150,7 +150,7 @@ pre{
 
 <h2>Conditions</h2>
 <div id="cond-list"></div>
-<button class="add-btn" onclick="addCondition()">+ Add Condition</button>
+<button class="add-btn" id="add-cond-btn">+ Add Condition</button>
 
 <h2>Next Steps</h2>
 <div class="field-row">
@@ -170,11 +170,17 @@ pre{
 </div>
 
 <div class="actions">
-  <button class="btn primary" onclick="save()">Save to Signature Library</button>
-  <button class="btn" onclick="cancel()">Cancel</button>
+  <button class="btn primary" id="save-btn">Save to Signature Library</button>
+  <button class="btn" id="cancel-btn">Cancel</button>
 </div>
 
 <script>
+window.onerror = function(msg, src, line) {
+  var b = document.createElement('div');
+  b.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#f14c4c;color:#fff;padding:6px 10px;font-size:11px;z-index:9999;font-family:monospace';
+  b.textContent = 'JS Error (line ' + line + '): ' + msg;
+  document.body.prepend(b);
+};
 const vscode = acquireVsCodeApi();
 
 // ── Field definitions ─────────────────────────────────────────────────────────
@@ -248,53 +254,55 @@ function getOperatorsForType(type) {
 }
 
 function renderConditions() {
-  const list = document.getElementById('cond-list');
+  var list = document.getElementById('cond-list');
   list.innerHTML = '';
-  for (const c of conditions) {
-    const fieldType = getFieldType(c.field);
-    const operators = getOperatorsForType(fieldType);
+  for (var ci = 0; ci < conditions.length; ci++) {
+    var c = conditions[ci];
+    var fieldType = getFieldType(c.field);
+    var operators = getOperatorsForType(fieldType);
 
-    // Build field select
-    let fieldOpts = '';
-    for (const g of FIELDS) {
+    var fieldOpts = '';
+    for (var gi = 0; gi < FIELDS.length; gi++) {
+      var g = FIELDS[gi];
       fieldOpts += '<optgroup label="' + esc(g.group) + '">';
-      for (const f of g.fields) {
-        const sel = f.value === c.field ? ' selected' : '';
-        fieldOpts += '<option value="' + f.value + '"' + sel + '>' + esc(f.label) + ' (' + f.type.toUpperCase() + ')</option>';
+      for (var fi = 0; fi < g.fields.length; fi++) {
+        var f = g.fields[fi];
+        var selF = f.value === c.field ? ' selected' : '';
+        fieldOpts += '<option value="' + f.value + '"' + selF + '>' + esc(f.label) + ' (' + f.type.toUpperCase() + ')</option>';
       }
       fieldOpts += '</optgroup>';
     }
 
-    // Build operator select
-    let opOpts = '';
-    for (const op of operators) {
-      const sel = op.value === c.operator ? ' selected' : '';
-      opOpts += '<option value="' + op.value + '"' + sel + '>' + esc(op.label) + '</option>';
+    var opOpts = '';
+    for (var oi = 0; oi < operators.length; oi++) {
+      var op = operators[oi];
+      var selO = op.value === c.operator ? ' selected' : '';
+      opOpts += '<option value="' + op.value + '"' + selO + '>' + esc(op.label) + '</option>';
     }
 
-    // Build value input
-    let valueInput;
+    var valueInput;
     if (fieldType === 'flag') {
-      const v0sel = String(c.value) === '0' ? ' selected' : '';
-      const v1sel = String(c.value) === '1' ? ' selected' : '';
-      valueInput = '<select onchange="setCondField(' + c.id + ', \'value\', this.value); onInput()"><option value="1"' + v1sel + '>1 (detected)</option><option value="0"' + v0sel + '>0 (not detected)</option></select>';
+      var v0sel = String(c.value) === '0' ? ' selected' : '';
+      var v1sel = String(c.value) === '1' ? ' selected' : '';
+      valueInput = '<select data-field="value"><option value="1"' + v1sel + '>1 (detected)</option><option value="0"' + v0sel + '>0 (not detected)</option></select>';
     } else if (fieldType === 'string') {
-      valueInput = '<input type="text" placeholder="value" value="' + esc(String(c.value ?? '')) + '" oninput="setCondField(' + c.id + ', \'value\', this.value); onInput()">';
+      valueInput = '<input type="text" placeholder="value" value="' + esc(String(c.value ?? '')) + '" data-field="value">';
     } else {
-      valueInput = '<input type="number" placeholder="0" value="' + esc(String(c.value ?? '')) + '" oninput="setCondField(' + c.id + ', \'value\', this.value); onInput()">';
+      valueInput = '<input type="number" placeholder="0" value="' + esc(String(c.value ?? '')) + '" data-field="value">';
     }
 
-    const block = document.createElement('div');
+    var block = document.createElement('div');
     block.className = 'cond-block';
+    block.dataset.condId = String(c.id);
     block.innerHTML =
-      '<button class="remove-btn" onclick="removeCondition(' + c.id + ')" title="Remove condition">&times;</button>' +
+      '<button class="remove-btn" data-remove="true" title="Remove condition">&times;</button>' +
       '<div class="cond-grid">' +
-        '<div><label>Field</label><select onchange="setCondField(' + c.id + ', \'field\', this.value); onInput()">' + fieldOpts + '</select></div>' +
-        '<div><label>Operator</label><select onchange="setCondField(' + c.id + ', \'operator\', this.value); onInput()">' + opOpts + '</select></div>' +
+        '<div><label>Field</label><select data-field="field">' + fieldOpts + '</select></div>' +
+        '<div><label>Operator</label><select data-field="operator">' + opOpts + '</select></div>' +
         '<div><label>Value</label>' + valueInput + '</div>' +
       '</div>' +
       '<div class="cond-desc-row"><label>Description (plain English)</label>' +
-        '<input type="text" placeholder="e.g. More than 50 threads are blocked on a lock" value="' + esc(c.description) + '" oninput="setCondField(' + c.id + ', \'description\', this.value); onInput()">' +
+        '<input type="text" placeholder="e.g. More than 50 threads are blocked on a lock" value="' + esc(c.description) + '" data-field="description">' +
       '</div>';
     list.appendChild(block);
   }
@@ -399,7 +407,42 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
-// Initialise with one empty condition and render
+// ── Event delegation for dynamically-created condition blocks ────────────────
+document.getElementById('cond-list').addEventListener('click', function(e) {
+  var btn = e.target.closest('[data-remove]');
+  if (!btn) return;
+  var block = btn.closest('[data-cond-id]');
+  if (block) removeCondition(Number(block.dataset.condId));
+});
+
+// change fires for select elements (field, operator, flag value)
+document.getElementById('cond-list').addEventListener('change', function(e) {
+  var el = e.target;
+  if (!el.dataset || !el.dataset.field) return;
+  var block = el.closest('[data-cond-id]');
+  if (!block) return;
+  setCondField(Number(block.dataset.condId), el.dataset.field, el.value);
+  onInput();
+});
+
+// input fires for text/number inputs (string value, description)
+document.getElementById('cond-list').addEventListener('input', function(e) {
+  var el = e.target;
+  if (!el.dataset || !el.dataset.field) return;
+  var field = el.dataset.field;
+  if (field === 'field' || field === 'operator') return; // handled by change
+  var block = el.closest('[data-cond-id]');
+  if (!block) return;
+  setCondField(Number(block.dataset.condId), field, el.value);
+  onInput();
+});
+
+// ── Static button wiring ───────────────────────────────────────────────────
+document.getElementById('add-cond-btn').addEventListener('click', function() { addCondition(); });
+document.getElementById('save-btn').addEventListener('click', function() { save(); });
+document.getElementById('cancel-btn').addEventListener('click', function() { cancel(); });
+
+// ── Initialise ─────────────────────────────────────────────────────────────
 addCondition();
 onInput();
 </script>

@@ -1,14 +1,15 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as cp from 'child_process';
 import { CaseManager, CaseSession } from './services/case-manager';
 import { SignatureService } from './services/signature-service';
-import { AnalysisService } from './services/analysis-service';
-import { Signature } from '@incident-investigator/core';
+import { AnalysisService, detectEvidenceType, extractTimestamp } from './services/analysis-service';
+import { Signature, parseThreadDump, ThreadDumpSignals } from '@incident-investigator/core';
 import { BridgeServer } from './services/bridge-server';
 import { OpenCasesProvider, ClosedCasesProvider, CaseItem } from './providers/sidebar.provider';
-import { SignatureProvider } from './providers/signature.provider';
+import { SignatureProvider, SignatureItem } from './providers/signature.provider';
 import { InvestigationWebview } from './providers/investigation.webview';
 import { newCase } from './commands/new-case';
 import { SignatureBuilderPanel } from './panels/signature-builder.webview';
