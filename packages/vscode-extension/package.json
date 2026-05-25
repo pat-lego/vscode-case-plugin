@@ -30,8 +30,13 @@
     "views": {
       "incident-investigator": [
         {
-          "id": "investigator.cases",
-          "name": "Cases",
+          "id": "investigator.openCases",
+          "name": "Open Cases",
+          "type": "tree"
+        },
+        {
+          "id": "investigator.closedCases",
+          "name": "Closed Cases",
           "type": "tree"
         },
         {
@@ -46,11 +51,6 @@
         "command": "investigator.newCase",
         "title": "New Investigation",
         "icon": "$(add)"
-      },
-      {
-        "command": "investigator.exportCase",
-        "title": "Export to Obsidian",
-        "icon": "$(export)"
       },
       {
         "command": "investigator.openCase",
@@ -68,13 +68,28 @@
         "command": "investigator.reloadSignatures",
         "title": "Reload Signatures",
         "icon": "$(refresh)"
-      }
+      },
+      { "command": "investigator.reopenCase", "title": "Reopen Case" },
+      { "command": "investigator.sendToAI", "title": "Send Case to AI", "icon": "$(robot)" },
+      { "command": "investigator.runStaticAnalysis", "title": "Run Static Analysis", "icon": "$(beaker)" },
+      { "command": "investigator.filterOpenCases", "title": "Filter Open Cases", "icon": "$(search)" },
+      { "command": "investigator.filterClosedCases", "title": "Filter Closed Cases", "icon": "$(search)" }
     ],
     "menus": {
       "view/title": [
         {
           "command": "investigator.newCase",
-          "when": "view == investigator.cases",
+          "when": "view == investigator.openCases",
+          "group": "navigation"
+        },
+        {
+          "command": "investigator.filterOpenCases",
+          "when": "view == investigator.openCases",
+          "group": "navigation"
+        },
+        {
+          "command": "investigator.filterClosedCases",
+          "when": "view == investigator.closedCases",
           "group": "navigation"
         },
         {
@@ -86,13 +101,23 @@
       "view/item/context": [
         {
           "command": "investigator.openCaseInFinder",
-          "when": "view == investigator.cases && viewItem == case",
+          "when": "(view == investigator.openCases || view == investigator.closedCases) && viewItem == case",
           "group": "navigation@1"
         },
         {
           "command": "investigator.deleteCase",
-          "when": "view == investigator.cases && viewItem == case",
+          "when": "(view == investigator.openCases || view == investigator.closedCases) && viewItem == case",
           "group": "9_cutcopypaste@1"
+        },
+        {
+          "command": "investigator.sendToAI",
+          "when": "(view == investigator.openCases || view == investigator.closedCases) && viewItem == case",
+          "group": "navigation@2"
+        },
+        {
+          "command": "investigator.runStaticAnalysis",
+          "when": "(view == investigator.openCases || view == investigator.closedCases) && viewItem == case",
+          "group": "navigation@3"
         }
       ]
     },

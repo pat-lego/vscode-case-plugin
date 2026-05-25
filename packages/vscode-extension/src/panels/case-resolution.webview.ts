@@ -33,6 +33,10 @@ export class CaseResolutionPanel {
           vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
         }
 
+        if (msg.aiSignatureReview) {
+          vscode.commands.executeCommand('investigator.suggestSignatureFromResolution', caseId, msg.resolution);
+        }
+
         panel.dispose();
       }
       if (msg.type === 'cancel') panel.dispose();
@@ -88,6 +92,14 @@ ${findings.length > 0 ? `
   </div>` : ''}
 </div>` : ''}
 
+<div class="section">
+  <label>AI signature review</label>
+  <div class="sig-row">
+    <input type="checkbox" id="ai-sig-review">
+    <label for="ai-sig-review" style="color:var(--vscode-foreground)">Ask AI to suggest a new signature from this resolution</label>
+  </div>
+</div>
+
 <div class="actions">
   <button class="btn primary" onclick="resolve()">Mark as Resolved</button>
   <button class="btn" onclick="cancel()">Cancel</button>
@@ -101,11 +113,13 @@ function resolve() {
   const resolution = document.getElementById('resolution').value.trim();
   if (!resolution) { alert('Please describe the resolution.'); return; }
   const createSig = document.getElementById('create-sig')?.checked ?? false;
+  const aiSigReview = document.getElementById('ai-sig-review')?.checked ?? false;
   const idx = parseInt(document.getElementById('finding-select')?.value ?? '0');
   vscode.postMessage({
     type: 'resolve',
     resolution,
     createSignature: createSig,
+    aiSignatureReview: aiSigReview,
     finding: findings[idx] ?? null
   });
 }

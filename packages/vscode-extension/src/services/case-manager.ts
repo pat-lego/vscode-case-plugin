@@ -111,6 +111,30 @@ export class CaseManager {
     if (!session) return false;
     const idx = session.meta.evidence.findIndex(e => e.id === evidenceId);
     if (idx === -1) return false;
+    const ev = session.meta.evidence[idx];
+
+    // Delete physical file(s) from disk so scanDirForEvidence won't re-discover them.
+    if (session.casePath) {
+      const caseDir = path.join(session.casePath, caseId);
+      if (ev.id.startsWith('disk-')) {
+        // Auto-scanned file — delete the original file in the case directory.
+        if (ev.filePath && fs.existsSync(ev.filePath)) {
+          try { fs.unlinkSync(ev.filePath); } catch { /* best-effort */ }
+        }
+      } else {
+        // Extension-managed evidence — delete the stored content file.
+        const storedFile = path.join(caseDir, `${ev.id}.txt`);
+        if (fs.existsSync(storedFile)) {
+          try { fs.unlinkSync(storedFile); } catch { /* best-effort */ }
+        }
+        // Delete the original file too if it was copied into the case directory.
+        const normalCaseDir = caseDir.endsWith(path.sep) ? caseDir : caseDir + path.sep;
+        if (ev.filePath && ev.filePath.startsWith(normalCaseDir) && fs.existsSync(ev.filePath)) {
+          try { fs.unlinkSync(ev.filePath); } catch { /* best-effort */ }
+        }
+      }
+    }
+
     session.meta.evidence.splice(idx, 1);
     session.threadDumpSignals.splice(idx, 1);
     session.meta.updatedAt = new Date();
@@ -134,6 +158,15 @@ export class CaseManager {
     session.meta.resolvedBy = resolvedBy;
     session.meta.updatedAt = new Date();
     this.save(caseId);
+  }
+
+  reopenCase(caseId: string) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+    session.meta.status = 'open';
+    session.meta.updatedAt = new Date();
+    this.save(caseId);
+    this.onActiveChangeEmitter.fire(this.activeCaseId);
   }
 
   deleteCase(caseId: string): boolean {

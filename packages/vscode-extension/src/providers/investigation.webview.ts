@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { CaseManager } from '../services/case-manager';
 import { AnalysisService } from '../services/analysis-service';
-import { ExportService } from '../services/export-service';
 import { BridgeServer } from '../services/bridge-server';
 
 export class InvestigationWebview {
@@ -14,7 +13,6 @@ export class InvestigationWebview {
     private context: vscode.ExtensionContext,
     private caseManager: CaseManager,
     private analysisService: AnalysisService,
-    private exportService: ExportService,
     private bridgeServer: BridgeServer
   ) {
     this.caseManager.onFindingsChange(({ caseId, findings }) => {
@@ -81,6 +79,7 @@ export class InvestigationWebview {
         panel.webview.postMessage({ type: 'bridgeStatus', connected: this.bridgeServer.isConnected() });
         panel.webview.postMessage({
           type: 'initialState',
+          status: session.meta.status,
           evidence: session.meta.evidence.map(e => ({
             id: e.id,
             name: e.filePath ? path.basename(e.filePath) : e.id,
@@ -98,31 +97,28 @@ export class InvestigationWebview {
       case 'addEvidence': {
         const uris = await vscode.window.showOpenDialog({
           canSelectFiles: true,
+          canSelectFolders: true,
           canSelectMany: true,
           openLabel: 'Add to Investigation',
           filters: {
-            'Thread Dumps & Logs': ['txt', 'log', 'tdump'],
+            'All Supported': ['txt','log','tdump','jfr','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml'],
+            'Thread Dumps & Logs': ['txt','log','tdump','jfr'],
+            'Images': ['png','jpg','jpeg','gif','webp'],
+            'Documents': ['pdf','pptx','ppt','xlsx','xls','docx','doc'],
+            'Archives': ['zip','tar','gz','7z'],
             'All Files': ['*']
           }
         });
         if (!uris?.length) return;
+        const caseDir = this.caseManager.getCaseDir(caseId);
         for (const uri of uris) {
-          const content = fs.readFileSync(uri.fsPath, 'utf-8');
-          const name = path.basename(uri.fsPath);
-          const { evidenceItem, findings } = this.analysisService.processEvidence(
-            caseId, name, content, uri.fsPath
-          );
-          panel.webview.postMessage({
-            type: 'evidenceAdded',
-            item: {
-              id: evidenceItem.id,
-              name,
-              type: evidenceItem.type,
-              timestamp: evidenceItem.capturedAt.toISOString()
-            }
-          });
-          if (findings.length > 0) {
-            panel.webview.postMessage({ type: 'findings', findings });
+          const stat = fs.statSync(uri.fsPath);
+          if (stat.isDirectory()) {
+            this.addFolderEvidence(caseId, uri.fsPath, caseDir, panel);
+          } else {
+            const added = this.addFileEvidence(caseId, uri.fsPath, caseDir);
+            if (added) panel.webview.postMessage({ type: 'evidenceAdded', item: added.item });
+            if (added?.findings?.length) panel.webview.postMessage({ type: 'findings', findings: added.findings });
           }
         }
         break;
@@ -152,11 +148,18 @@ export class InvestigationWebview {
             } catch { content = null; }
           }
         } else {
-          let text: string | undefined = ev.rawContent;
-          if (!text && ev.filePath) {
-            try { text = fs.readFileSync(ev.filePath, 'utf-8'); } catch { text = undefined; }
+          const BINARY_EXTS = new Set(['.pdf','.pptx','.ppt','.xlsx','.xls','.docx','.doc','.zip','.tar','.gz','.7z']);
+          const fileExt = path.extname(ev.filePath ?? '').toLowerCase();
+          if (BINARY_EXTS.has(fileExt)) {
+            content = `${fileExt.slice(1).toUpperCase()} file — click "Open ↗" to view in your default application.`;
+            contentType = 'text';
+          } else {
+            let text: string | undefined = ev.rawContent;
+            if (!text && ev.filePath) {
+              try { text = fs.readFileSync(ev.filePath, 'utf-8'); } catch { text = undefined; }
+            }
+            content = text ? text.slice(0, 200000) : null;
           }
-          content = text ? text.slice(0, 200000) : null;
         }
         panel.webview.postMessage({ type: 'evidenceView', id: ev.id, name, paneId, content, contentType });
         break;
@@ -187,13 +190,10 @@ export class InvestigationWebview {
         this.caseManager.updateNotes(caseId, String(msg.notes ?? ''));
         break;
 
-      case 'exportCase': {
-        const session = this.caseManager.getSession(caseId);
-        if (!session) return;
-        const mdPath = await this.exportService.exportCase(session);
-        if (mdPath) vscode.window.showInformationMessage(`Exported to: ${mdPath}`);
+      case 'reopenCase':
+        this.caseManager.reopenCase(caseId);
+        panel.webview.postMessage({ type: 'statusChanged', status: 'open' });
         break;
-      }
 
       case 'resolveCase':
         vscode.commands.executeCommand('investigator.resolveCase', caseId);
@@ -211,6 +211,96 @@ export class InvestigationWebview {
         vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
         break;
     }
+  }
+
+  private addFileEvidence(caseId: string, filePath: string, caseDir: string | undefined): { item: { id: string; name: string; type: string; timestamp: string }; findings?: unknown[] } | null {
+    const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml']);
+    const ext = path.extname(filePath).toLowerCase();
+    const name = path.basename(filePath);
+
+    if (TEXT_EXTS.has(ext)) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const { evidenceItem, findings } = this.analysisService.processEvidence(caseId, name, content, filePath);
+        return {
+          item: { id: evidenceItem.id, name, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString() },
+          findings
+        };
+      } catch { return null; }
+    }
+
+    // Binary file — copy to case dir if available
+    let destPath = filePath;
+    if (caseDir) {
+      try {
+        fs.mkdirSync(caseDir, { recursive: true });
+        destPath = path.join(caseDir, name);
+        if (destPath !== filePath) fs.copyFileSync(filePath, destPath);
+      } catch { destPath = filePath; }
+    }
+
+    const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp']);
+    const type = IMAGE_EXTS.has(ext) ? 'screenshot' : 'generic';
+    const item = {
+      id: `ev-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+      type,
+      source: 'local-file' as const,
+      capturedAt: new Date(),
+      filePath: destPath,
+    };
+    this.caseManager.addEvidence(caseId, item as import('@incident-investigator/core').EvidenceItem);
+    return { item: { id: item.id, name, type, timestamp: item.capturedAt.toISOString() } };
+  }
+
+  private addFolderEvidence(caseId: string, folderPath: string, caseDir: string | undefined, panel: vscode.WebviewPanel) {
+    const folderName = path.basename(folderPath);
+    const walk = (dir: string, relDir: string) => {
+      let entries: import('fs').Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const srcPath = path.join(dir, entry.name);
+        const relPath = path.join(relDir, entry.name);
+        if (entry.isDirectory()) {
+          if (caseDir) {
+            try { fs.mkdirSync(path.join(caseDir, relPath), { recursive: true }); } catch {}
+          }
+          walk(srcPath, relPath);
+        } else {
+          let destPath = srcPath;
+          if (caseDir) {
+            destPath = path.join(caseDir, relPath);
+            try { fs.mkdirSync(path.dirname(destPath), { recursive: true }); fs.copyFileSync(srcPath, destPath); } catch { destPath = srcPath; }
+          }
+          const displayName = relPath; // preserve structure in the name
+          const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml']);
+          const ext = path.extname(entry.name).toLowerCase();
+          if (TEXT_EXTS.has(ext)) {
+            try {
+              const content = fs.readFileSync(srcPath, 'utf-8');
+              const { evidenceItem, findings } = this.analysisService.processEvidence(caseId, entry.name, content, destPath);
+              panel.webview.postMessage({ type: 'evidenceAdded', item: { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString() } });
+              if (findings.length) panel.webview.postMessage({ type: 'findings', findings });
+            } catch {}
+          } else {
+            const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp']);
+            const evType = IMAGE_EXTS.has(ext) ? 'screenshot' : 'generic';
+            const item = {
+              id: `ev-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+              type: evType,
+              source: 'local-file' as const,
+              capturedAt: new Date(),
+              filePath: destPath,
+            };
+            this.caseManager.addEvidence(caseId, item as import('@incident-investigator/core').EvidenceItem);
+            panel.webview.postMessage({ type: 'evidenceAdded', item: { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString() } });
+          }
+        }
+      }
+    };
+    if (caseDir) {
+      try { fs.mkdirSync(path.join(caseDir, folderName), { recursive: true }); } catch {}
+    }
+    walk(folderPath, folderName);
   }
 
   private buildHtml(caseId: string, title: string): string {
@@ -316,7 +406,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
   <div class="header-right">
     <div class="bridge"><div class="dot" id="dot"></div><span id="bridge-lbl">Disconnected</span></div>
     <button class="btn" id="resolve-btn">Resolve</button>
-    <button class="btn primary" id="export-btn">Export</button>
   </div>
 </div>
 
@@ -519,7 +608,9 @@ window.addEventListener('message', function(evt) {
     renderFindings(m.findings);
     var ta = document.getElementById('notes-area');
     if (ta && m.notes) ta.value = m.notes;
+    updateStatusButton(m.status);
   }
+  else if (m.type === 'statusChanged') { updateStatusButton(m.status); }
   else if (m.type === 'evidenceAdded') addEvidence(m.item);
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
   else if (m.type === 'findings') renderFindings(m.findings);
@@ -801,9 +892,26 @@ document.getElementById('analysis-body').addEventListener('click', function(e) {
 });
 
 // Wire up static buttons via addEventListener (avoids inline-onclick scope issues)
+function updateStatusButton(status) {
+  var btn = document.getElementById('resolve-btn');
+  if (!btn) return;
+  if (status === 'resolved') {
+    btn.textContent = 'Reopen';
+    btn.dataset.caseStatus = 'resolved';
+  } else {
+    btn.textContent = 'Resolve';
+    btn.dataset.caseStatus = 'open';
+  }
+}
+
 document.getElementById('add-evidence-btn').addEventListener('click', function() { send('addEvidence'); });
-document.getElementById('resolve-btn').addEventListener('click', function() { send('resolveCase'); });
-document.getElementById('export-btn').addEventListener('click', function() { send('exportCase'); });
+document.getElementById('resolve-btn').addEventListener('click', function() {
+  if (this.dataset.caseStatus === 'resolved') {
+    send('reopenCase');
+  } else {
+    send('resolveCase');
+  }
+});
 document.getElementById('analysis-toggle').addEventListener('click', function() { toggleAnalysis(); });
 
 send('ready');
