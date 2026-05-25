@@ -13,6 +13,7 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "icon": "icons/icon128.png",
   "categories": ["Other"],
   "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",
@@ -22,7 +23,7 @@
         {
           "id": "incident-investigator",
           "title": "Incident Investigator",
-          "icon": "$(search-view-icon)"
+          "icon": "icons/icon128.png"
         }
       ]
     },

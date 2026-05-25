@@ -10,6 +10,8 @@ export interface CaseSession {
   findings: Finding[];
   /** The root folder this case was loaded from, or will be written to. */
   casePath: string;
+  /** True for plain Obsidian notes loaded without extension frontmatter — never written back. */
+  readonly?: boolean;
 }
 
 export class CaseManager {
@@ -130,7 +132,7 @@ export class CaseManager {
 
   private save(caseId: string) {
     const session = this.sessions.get(caseId);
-    if (!session) return;
+    if (!session || session.readonly) return;
 
     if (session.casePath) {
       try {
@@ -174,9 +176,15 @@ export class CaseManager {
         if (!fs.existsSync(mdPath)) continue;
 
         try {
-          const c = this.parseCaseFile(mdPath, caseDir);
-          if (c) {
-            this.sessions.set(c.id, { meta: c, threadDumpSignals: [], findings: [], casePath });
+          const result = this.parseCaseFile(mdPath, caseDir);
+          if (result) {
+            this.sessions.set(result.meta.id, {
+              meta: result.meta,
+              threadDumpSignals: [],
+              findings: [],
+              casePath,
+              readonly: result.readonly,
+            });
           }
         } catch {
           // Malformed case file — skip silently and leave the folder untouched
@@ -186,44 +194,68 @@ export class CaseManager {
   }
 
   /**
-   * Parses the YAML frontmatter from a case's primary MD file and restores
-   * the Case object. Evidence raw content is read from the sibling files
-   * stored in the case folder alongside the MD.
+   * Parses a case's primary MD file and restores the Case object.
+   * If the file has extension YAML frontmatter (case_id field) it is treated as
+   * a full editable case. Otherwise the folder is treated as a read-only Obsidian
+   * note: the folder name becomes the case ID and the first heading (if any)
+   * becomes the title.
    */
-  private parseCaseFile(mdPath: string, caseDir: string): Case | null {
+  private parseCaseFile(mdPath: string, caseDir: string): { meta: Case; readonly: boolean } | null {
     const content = fs.readFileSync(mdPath, 'utf-8');
     const fm = extractFrontmatter(content);
-    if (!fm || !fm.case_id) return null;
 
-    const rawEvidence = Array.isArray(fm.evidence) ? fm.evidence as Record<string, unknown>[] : [];
+    if (fm && fm.case_id) {
+      const rawEvidence = Array.isArray(fm.evidence) ? fm.evidence as Record<string, unknown>[] : [];
 
-    const evidence: EvidenceItem[] = rawEvidence.map(raw => {
-      const item: EvidenceItem = {
-        id: String(raw['id'] ?? ''),
-        type: raw['type'] as EvidenceItem['type'],
-        source: String(raw['source'] ?? ''),
-        capturedAt: new Date(raw['captured_at'] as string),
-        filePath: String(raw['file_path'] ?? ''),
-      };
-      if (raw['stored_file']) {
-        const storedPath = path.join(caseDir, String(raw['stored_file']));
-        if (fs.existsSync(storedPath)) {
-          item.rawContent = fs.readFileSync(storedPath, 'utf-8');
+      const evidence: EvidenceItem[] = rawEvidence.map(raw => {
+        const item: EvidenceItem = {
+          id: String(raw['id'] ?? ''),
+          type: raw['type'] as EvidenceItem['type'],
+          source: String(raw['source'] ?? ''),
+          capturedAt: new Date(raw['captured_at'] as string),
+          filePath: String(raw['file_path'] ?? ''),
+        };
+        if (raw['stored_file']) {
+          const storedPath = path.join(caseDir, String(raw['stored_file']));
+          if (fs.existsSync(storedPath)) {
+            item.rawContent = fs.readFileSync(storedPath, 'utf-8');
+          }
         }
-      }
-      return item;
-    });
+        return item;
+      });
+
+      return {
+        meta: {
+          id: String(fm.case_id),
+          title: String(fm.title ?? ''),
+          createdAt: new Date(fm.created as string),
+          updatedAt: new Date(fm.updated as string),
+          status: (fm.status as 'open' | 'resolved') ?? 'open',
+          evidence,
+          resolution: fm.resolution ? String(fm.resolution) : undefined,
+          resolvedBy: fm.resolved_by ? String(fm.resolved_by) : undefined,
+          notes: fm.notes ? String(fm.notes) : undefined,
+        },
+        readonly: false,
+      };
+    }
+
+    // Plain Obsidian note — no case_id frontmatter.
+    // Load as read-only so the extension never overwrites the user's file.
+    const caseId = path.basename(caseDir);
+    const stats = fs.statSync(mdPath);
+    const title = extractFirstHeading(content) ?? caseId;
 
     return {
-      id: String(fm.case_id),
-      title: String(fm.title ?? ''),
-      createdAt: new Date(fm.created as string),
-      updatedAt: new Date(fm.updated as string),
-      status: (fm.status as 'open' | 'resolved') ?? 'open',
-      evidence,
-      resolution: fm.resolution ? String(fm.resolution) : undefined,
-      resolvedBy: fm.resolved_by ? String(fm.resolved_by) : undefined,
-      notes: fm.notes ? String(fm.notes) : undefined,
+      meta: {
+        id: caseId,
+        title,
+        createdAt: stats.birthtime,
+        updatedAt: stats.mtime,
+        status: 'open',
+        evidence: [],
+      },
+      readonly: true,
     };
   }
 
@@ -315,6 +347,11 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function extractFirstHeading(content: string): string | null {
+  const match = content.match(/^#{1,3}\s+(.+)$/m);
+  return match ? match[1].trim() : null;
 }
 
 function buildCaseSummary(session: CaseSession): string {
