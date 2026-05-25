@@ -86,6 +86,26 @@ export class CaseManager {
     this.onFindingsChangeEmitter.fire({ caseId, findings });
   }
 
+  removeEvidence(caseId: string, evidenceId: string): boolean {
+    const session = this.sessions.get(caseId);
+    if (!session) return false;
+    const idx = session.meta.evidence.findIndex(e => e.id === evidenceId);
+    if (idx === -1) return false;
+    session.meta.evidence.splice(idx, 1);
+    session.threadDumpSignals.splice(idx, 1);
+    session.meta.updatedAt = new Date();
+    this.save(caseId);
+    return true;
+  }
+
+  updateNotes(caseId: string, notes: string) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+    session.meta.notes = notes;
+    session.meta.updatedAt = new Date();
+    this.save(caseId);
+  }
+
   resolveCase(caseId: string, resolution: string, resolvedBy: string) {
     const session = this.sessions.get(caseId);
     if (!session) return;
@@ -203,6 +223,7 @@ export class CaseManager {
       evidence,
       resolution: fm.resolution ? String(fm.resolution) : undefined,
       resolvedBy: fm.resolved_by ? String(fm.resolved_by) : undefined,
+      notes: fm.notes ? String(fm.notes) : undefined,
     };
   }
 
@@ -250,6 +271,7 @@ export class CaseManager {
         evidence: evidenceEntries,
         resolution: meta.resolution ?? null,
         resolved_by: meta.resolvedBy ?? null,
+        notes: meta.notes ?? null,
       },
       { lineWidth: -1, sortKeys: false }
     );

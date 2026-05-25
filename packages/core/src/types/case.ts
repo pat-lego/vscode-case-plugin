@@ -7,6 +7,7 @@ export interface Case {
   evidence: EvidenceItem[];
   resolution?: string;
   resolvedBy?: string;
+  notes?: string;
 }
 
 export interface EvidenceItem {

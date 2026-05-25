@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import * as WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import { CaseManager } from './case-manager';
 import { AnalysisService } from './analysis-service';
 
@@ -14,7 +14,7 @@ export interface BridgeCapture {
 }
 
 export class BridgeServer {
-  private server: WebSocket.Server | undefined;
+  private server: WebSocketServer | undefined;
   private clients = new Set<WebSocket.WebSocket>();
 
   private statusEmitter = new vscode.EventEmitter<boolean>();
@@ -35,7 +35,7 @@ export class BridgeServer {
     if (this.server) return;
 
     try {
-      this.server = new WebSocket.Server({ port, host: '127.0.0.1' });
+      this.server = new WebSocketServer({ port, host: '127.0.0.1' });
     } catch {
       vscode.window.showWarningMessage(`Investigation Bridge: could not start on port ${port}.`);
       return;

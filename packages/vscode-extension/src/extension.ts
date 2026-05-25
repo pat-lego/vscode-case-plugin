@@ -74,10 +74,10 @@ export function activate(context: vscode.ExtensionContext) {
       CaseResolutionPanel.show(context, caseId, caseManager, sigService)
     ),
     vscode.commands.registerCommand('investigator.fullReview', (caseId: string) =>
-      ClaudeReviewPanel.show(context, caseId, caseManager)
+      ClaudeReviewPanel.show(context, caseId, caseManager, sigService)
     ),
     vscode.commands.registerCommand('investigator.askClaude', (caseId: string, signatureId: string) =>
-      ClaudeReviewPanel.showForSignature(context, caseId, signatureId, caseManager)
+      ClaudeReviewPanel.showForSignature(context, caseId, signatureId, caseManager, sigService)
     ),
     vscode.commands.registerCommand('investigator.buildSignature', (caseId: string, finding: unknown) =>
       SignatureBuilderPanel.show(context, caseId, finding, caseManager, sigService)

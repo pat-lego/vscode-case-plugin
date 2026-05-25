@@ -3,6 +3,12 @@
   "displayName": "Incident Investigator",
   "description": "Thread dump and log analysis for incident investigation",
   "version": "0.1.0",
+  "publisher": "patlego",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pat-lego/vscode-case-plugin.git"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.85.0"
@@ -108,8 +114,10 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "build": "node esbuild.js",
+    "build:tsc": "tsc",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies"
   },
   "dependencies": {
     "@incident-investigator/core": "*",

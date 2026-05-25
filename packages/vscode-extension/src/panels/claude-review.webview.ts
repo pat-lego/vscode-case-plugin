@@ -1,25 +1,28 @@
 import * as vscode from 'vscode';
 import { CaseManager } from '../services/case-manager';
+import { SignatureService } from '../services/signature-service';
 
 export class ClaudeReviewPanel {
-  static show(context: vscode.ExtensionContext, caseId: string, caseManager: CaseManager) {
-    ClaudeReviewPanel.open(context, caseId, undefined, caseManager);
+  static show(context: vscode.ExtensionContext, caseId: string, caseManager: CaseManager, sigService?: SignatureService) {
+    ClaudeReviewPanel.open(context, caseId, undefined, caseManager, sigService);
   }
 
   static showForSignature(
     context: vscode.ExtensionContext,
     caseId: string,
     signatureId: string,
-    caseManager: CaseManager
+    caseManager: CaseManager,
+    sigService?: SignatureService
   ) {
-    ClaudeReviewPanel.open(context, caseId, signatureId, caseManager);
+    ClaudeReviewPanel.open(context, caseId, signatureId, caseManager, sigService);
   }
 
   private static open(
     context: vscode.ExtensionContext,
     caseId: string,
     focusSignatureId: string | undefined,
-    caseManager: CaseManager
+    caseManager: CaseManager,
+    sigService?: SignatureService
   ) {
     const session = caseManager.getSession(caseId);
     if (!session) return;
@@ -31,8 +34,8 @@ export class ClaudeReviewPanel {
       { enableScripts: true }
     );
 
-    // Build compressed context (signals summary, not raw dumps)
-    const summary = buildContext(session, focusSignatureId);
+    const allSignatures = sigService?.getAll() ?? [];
+    const summary = buildContext(session, focusSignatureId, allSignatures);
     panel.webview.html = buildHtml(caseId, summary);
 
     panel.webview.onDidReceiveMessage(async msg => {
@@ -60,7 +63,11 @@ export class ClaudeReviewPanel {
   }
 }
 
-function buildContext(session: ReturnType<CaseManager['getSession']>, focusSignatureId?: string): string {
+function buildContext(
+  session: ReturnType<CaseManager['getSession']>,
+  focusSignatureId?: string,
+  allSignatures: ReturnType<SignatureService['getAll']> = []
+): string {
   if (!session) return '';
   const { meta, findings, threadDumpSignals } = session;
 
@@ -85,15 +92,42 @@ function buildContext(session: ReturnType<CaseManager['getSession']>, focusSigna
   }
 
   if (findings.length > 0) {
-    lines.push('Matched signatures:');
+    lines.push('\n## Matched Signatures');
+    const matchedIds = new Set(findings.map(f => f.signatureId));
     for (const f of findings) {
-      lines.push(`  [${f.confidence}] ${f.signatureName}: ${f.evidence.join('; ')}`);
+      lines.push(`\n### [${f.confidence.toUpperCase()}] ${f.signatureName}`);
+      lines.push(`Evidence: ${f.evidence.join('; ')}`);
+      const sig = allSignatures.find(s => s.id === f.signatureId);
+      if (sig) {
+        if (sig.description) lines.push(`What this means: ${sig.description}`);
+        if (sig.indicators.length > 0) lines.push(`Indicators: ${sig.indicators.join('; ')}`);
+        if (sig.nextSteps.length > 0) lines.push(`Recommended next steps: ${sig.nextSteps.join('; ')}`);
+        if (sig.relatedSignatures.length > 0) lines.push(`Related patterns: ${sig.relatedSignatures.join(', ')}`);
+      }
+    }
+
+    // Signatures not matched — brief catalogue so Claude knows what was ruled out
+    const unmatched = allSignatures.filter(s => !matchedIds.has(s.id));
+    if (unmatched.length > 0) {
+      lines.push('\n## Available Signatures (not matched)');
+      for (const s of unmatched) {
+        lines.push(`- ${s.name}: ${s.description}`);
+      }
+    }
+  } else if (allSignatures.length > 0) {
+    lines.push('\n## Signature Library');
+    lines.push('No signatures matched yet. Available patterns to consider:');
+    for (const s of allSignatures) {
+      lines.push(`\n### ${s.name}`);
+      lines.push(`What it detects: ${s.description}`);
+      if (s.indicators.length > 0) lines.push(`Indicators: ${s.indicators.join('; ')}`);
+      if (s.nextSteps.length > 0) lines.push(`If confirmed: ${s.nextSteps.join('; ')}`);
     }
   }
 
   if (focusSignatureId) {
     const f = findings.find(x => x.signatureId === focusSignatureId);
-    if (f) lines.push(`\nFocus: "${f.signatureName}" — ${f.evidence.join(', ')}`);
+    if (f) lines.push(`\n## Focus\n"${f.signatureName}" — ${f.evidence.join(', ')}`);
   }
 
   return lines.join('\n');
@@ -110,7 +144,7 @@ async function callClaude(apiKey: string, prompt: string): Promise<string> {
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
-      system: 'You are an expert JVM and AEM incident analyst. Analyze the given signals and provide a concise root cause analysis. Be specific and actionable. Format your response with: Root Cause, Contributing Factors, Ruled Out, Recommended Next Steps.',
+      system: 'You are an expert JVM and AEM incident analyst. You will be given case signals and a signature library — detection rules that describe known failure patterns, their indicators, and recommended next steps. Use matched signatures as your primary diagnostic guide. For unmatched signatures, explain why they were likely ruled out based on the evidence. Format your response with: **Root Cause**, **Contributing Factors**, **Ruled Out**, **Recommended Next Steps**. Be specific and actionable.',
       messages: [{ role: 'user', content: prompt }]
     })
   });
