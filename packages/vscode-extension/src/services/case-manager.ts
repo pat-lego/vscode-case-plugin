@@ -8,6 +8,8 @@ export interface CaseSession {
   meta: Case;
   threadDumpSignals: ThreadDumpSignals[];
   findings: Finding[];
+  /** The root folder this case was loaded from, or will be written to. */
+  casePath: string;
 }
 
 export class CaseManager {
@@ -21,9 +23,9 @@ export class CaseManager {
   readonly onFindingsChange = this.onFindingsChangeEmitter.event;
 
   constructor(private context: vscode.ExtensionContext) {
-    const casePath = this.getCasePath();
-    if (casePath) {
-      this.loadFromDisk(casePath);
+    const paths = this.getCasePaths();
+    if (paths.length > 0) {
+      this.loadFromDisk(paths);
     } else {
       this.loadFromGlobalState();
     }
@@ -32,7 +34,10 @@ export class CaseManager {
   createCase(id: string, title: string): CaseSession {
     const now = new Date();
     const meta: Case = { id, title, createdAt: now, updatedAt: now, status: 'open', evidence: [] };
-    const session: CaseSession = { meta, threadDumpSignals: [], findings: [] };
+    // New cases are written to the first configured path.
+    // Falls back to '' (globalState) when no paths are configured.
+    const casePath = this.getCasePaths()[0] ?? '';
+    const session: CaseSession = { meta, threadDumpSignals: [], findings: [], casePath };
     this.sessions.set(id, session);
     this.activeCaseId = id;
     this.save(id);
@@ -91,17 +96,25 @@ export class CaseManager {
     this.save(caseId);
   }
 
-  getCasePath(): string | undefined {
-    return vscode.workspace.getConfiguration('investigator').get<string>('casePath') || undefined;
+  /**
+   * Returns the list of configured case root paths, filtering out blanks.
+   * Each path is a folder whose immediate subdirectories are individual cases.
+   */
+  getCasePaths(): string[] {
+    return (
+      vscode.workspace.getConfiguration('investigator').get<string[]>('casePaths') ?? []
+    ).filter(p => p.trim() !== '');
   }
 
   // ── Disk persistence ──────────────────────────────────────────────────────
 
   private save(caseId: string) {
-    const casePath = this.getCasePath();
-    if (casePath) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+
+    if (session.casePath) {
       try {
-        this.writeToDisk(caseId, casePath);
+        this.writeToDisk(caseId, session.casePath);
       } catch (err) {
         vscode.window.showWarningMessage(`Incident Investigator: could not write case to disk — ${err}`);
       }
@@ -111,32 +124,43 @@ export class CaseManager {
   }
 
   /**
-   * Scans casePath for subdirectories. Each subdirectory that contains a
-   * primary MD file named after itself (CASE-ID/CASE-ID.md) is treated as a
-   * case and loaded into memory.
+   * Scans every configured path for case subdirectories. A directory is
+   * recognised as a case when it contains a primary MD file with the same
+   * name as the directory (e.g. issues/ISSUE-1/ISSUE-1.md).
+   *
+   * When the same case ID appears in more than one path the first path wins,
+   * so the order of casePaths acts as a priority list.
    */
-  private loadFromDisk(casePath: string) {
-    if (!fs.existsSync(casePath)) return;
+  private loadFromDisk(casePaths: string[]) {
+    for (const casePath of casePaths) {
+      if (!fs.existsSync(casePath)) continue;
 
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(casePath, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const caseId = entry.name;
-      const caseDir = path.join(casePath, caseId);
-      const mdPath = path.join(caseDir, `${caseId}.md`);
-      if (!fs.existsSync(mdPath)) continue;
-
+      let entries: fs.Dirent[];
       try {
-        const c = this.parseCaseFile(mdPath, caseDir);
-        if (c) this.sessions.set(c.id, { meta: c, threadDumpSignals: [], findings: [] });
+        entries = fs.readdirSync(casePath, { withFileTypes: true });
       } catch {
-        // Malformed case file — skip silently and leave the folder untouched
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const caseId = entry.name;
+
+        // First path wins — do not overwrite a case already loaded.
+        if (this.sessions.has(caseId)) continue;
+
+        const caseDir = path.join(casePath, caseId);
+        const mdPath = path.join(caseDir, `${caseId}.md`);
+        if (!fs.existsSync(mdPath)) continue;
+
+        try {
+          const c = this.parseCaseFile(mdPath, caseDir);
+          if (c) {
+            this.sessions.set(c.id, { meta: c, threadDumpSignals: [], findings: [], casePath });
+          }
+        } catch {
+          // Malformed case file — skip silently and leave the folder untouched
+        }
       }
     }
   }
@@ -161,7 +185,6 @@ export class CaseManager {
         capturedAt: new Date(raw['captured_at'] as string),
         filePath: String(raw['file_path'] ?? ''),
       };
-      // Read raw content from the evidence file stored in the case folder
       if (raw['stored_file']) {
         const storedPath = path.join(caseDir, String(raw['stored_file']));
         if (fs.existsSync(storedPath)) {
@@ -184,13 +207,13 @@ export class CaseManager {
   }
 
   /**
-   * Writes the primary MD file for a case.
+   * Writes the primary MD file for a case into its root path.
    *
-   * Layout:
-   *   casePath/
-   *     CASE-ID/
-   *       CASE-ID.md          ← YAML frontmatter + human-readable summary
-   *       ev-<id>.txt         ← raw content of each text evidence item
+   * Layout inside the root path:
+   *   <casePath>/
+   *     <CASE-ID>/
+   *       <CASE-ID>.md      ← YAML frontmatter + human-readable summary
+   *       <ev-id>.txt       ← raw content of each text evidence item
    */
   private writeToDisk(caseId: string, casePath: string) {
     const session = this.sessions.get(caseId);
@@ -201,7 +224,6 @@ export class CaseManager {
 
     const { meta } = session;
 
-    // Write each evidence item's raw content to its own file
     const evidenceEntries = meta.evidence.map(ev => {
       let storedFile: string | null = null;
       if (ev.rawContent && ev.type !== 'screenshot') {
@@ -237,7 +259,7 @@ export class CaseManager {
     fs.writeFileSync(path.join(caseDir, `${caseId}.md`), md, 'utf-8');
   }
 
-  // ── Global state fallback (used when casePath is not configured) ──────────
+  // ── Global state fallback (used when no casePaths are configured) ─────────
 
   private loadFromGlobalState() {
     const persisted = this.context.globalState.get<Case[]>('investigator.cases', []);
@@ -250,7 +272,8 @@ export class CaseManager {
           evidence: c.evidence.map(e => ({ ...e, capturedAt: new Date(e.capturedAt) }))
         },
         threadDumpSignals: [],
-        findings: []
+        findings: [],
+        casePath: ''
       });
     }
   }
@@ -262,7 +285,6 @@ export class CaseManager {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Extracts and parses the YAML frontmatter block from a markdown file. */
 function extractFrontmatter(content: string): Record<string, unknown> | null {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
@@ -273,7 +295,6 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
   }
 }
 
-/** Builds the human-readable markdown body written below the frontmatter. */
 function buildCaseSummary(session: CaseSession): string {
   const { meta, findings } = session;
   const lines: string[] = [];

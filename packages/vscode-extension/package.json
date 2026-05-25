@@ -98,9 +98,11 @@
           "type": "string",
           "description": "Anthropic API key for Claude case review (optional)"
         },
-        "investigator.casePath": {
-          "type": "string",
-          "description": "The location for case folders"
+        "investigator.casePaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Folders to scan for cases. Each folder may contain multiple case subfolders where the subfolder name matches its primary MD file (e.g. issues/ISSUE-1/ISSUE-1.md). All paths are scanned on startup. New cases are written to the first path in the list."
         }
       }
     }
