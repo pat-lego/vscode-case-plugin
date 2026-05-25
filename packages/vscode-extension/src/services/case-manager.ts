@@ -24,6 +24,10 @@ export class CaseManager {
   private onFindingsChangeEmitter = new vscode.EventEmitter<{ caseId: string; findings: Finding[] }>();
   readonly onFindingsChange = this.onFindingsChangeEmitter.event;
 
+  /** Fires whenever any case's data changes (title, notes, evidence, status). */
+  private onCaseUpdatedEmitter = new vscode.EventEmitter<string>();
+  readonly onCaseUpdated = this.onCaseUpdatedEmitter.event;
+
   constructor(private context: vscode.ExtensionContext) {
     const paths = this.getCasePaths();
     if (paths.length > 0) {
@@ -62,6 +66,7 @@ export class CaseManager {
     this.context.globalState.update('investigator.activeCaseId', id);
     this.save(id);
     this.onActiveChangeEmitter.fire(id);
+    this.onCaseUpdatedEmitter.fire(id);
     return session;
   }
 
@@ -98,6 +103,7 @@ export class CaseManager {
     session.meta.updatedAt = new Date();
     if (signals) session.threadDumpSignals.push(signals);
     this.save(caseId);
+    this.onCaseUpdatedEmitter.fire(caseId);
   }
 
   updateFindings(caseId: string, findings: Finding[]) {
@@ -140,6 +146,7 @@ export class CaseManager {
     session.threadDumpSignals.splice(idx, 1);
     session.meta.updatedAt = new Date();
     this.save(caseId);
+    this.onCaseUpdatedEmitter.fire(caseId);
     return true;
   }
 
@@ -148,7 +155,16 @@ export class CaseManager {
     if (!session) return;
     session.meta.notes = notes;
     session.meta.updatedAt = new Date();
-    this.save(caseId);
+    if (session.readonly) {
+      // For Obsidian notes notes IS the file content — also keep title in sync
+      // with whatever heading the user typed into the notes body.
+      const heading = extractFirstHeading(notes);
+      if (heading) session.meta.title = heading;
+      this.writeObsidianNote(caseId);
+    } else {
+      this.save(caseId);
+    }
+    this.onCaseUpdatedEmitter.fire(caseId);
   }
 
   updateTitle(caseId: string, title: string) {
@@ -156,7 +172,19 @@ export class CaseManager {
     if (!session) return;
     session.meta.title = title;
     session.meta.updatedAt = new Date();
-    this.save(caseId);
+    if (session.readonly) {
+      // For Obsidian notes, update the heading inside the notes body so the
+      // two stay in sync, then write back without adding YAML frontmatter.
+      if (session.meta.notes) {
+        session.meta.notes = session.meta.notes.replace(/^(#{1,3}) .+/m, `$1 ${title}`);
+      } else {
+        session.meta.notes = `# ${title}`;
+      }
+      this.writeObsidianNote(caseId);
+    } else {
+      this.save(caseId);
+    }
+    this.onCaseUpdatedEmitter.fire(caseId);
     this.onActiveChangeEmitter.fire(this.activeCaseId);
   }
 
@@ -167,10 +195,9 @@ export class CaseManager {
     session.meta.resolution = resolution;
     session.meta.resolvedBy = resolvedBy;
     session.meta.updatedAt = new Date();
-    // If the case was loaded as a read-only Obsidian note, convert it to a
-    // managed case now that the user has explicitly performed a write action.
     if (session.readonly) session.readonly = false;
     this.save(caseId);
+    this.onCaseUpdatedEmitter.fire(caseId);
     this.onActiveChangeEmitter.fire(this.activeCaseId);
   }
 
@@ -180,6 +207,7 @@ export class CaseManager {
     session.meta.status = 'open';
     session.meta.updatedAt = new Date();
     this.save(caseId);
+    this.onCaseUpdatedEmitter.fire(caseId);
     this.onActiveChangeEmitter.fire(this.activeCaseId);
   }
 
@@ -373,6 +401,27 @@ export class CaseManager {
       },
       readonly: true,
     };
+  }
+
+  /**
+   * Writes an Obsidian-style plain-Markdown note back to disk without adding
+   * YAML frontmatter. The session's `notes` field contains the full file body
+   * (heading + content), so we write it verbatim. Only called for readonly
+   * (Obsidian) cases where `save()` would otherwise be a no-op.
+   */
+  private writeObsidianNote(caseId: string) {
+    const session = this.sessions.get(caseId);
+    if (!session || !session.casePath) return;
+
+    const caseDir = path.join(session.casePath, caseId);
+    const mdPath = path.join(caseDir, `${caseId}.md`);
+    const content = session.meta.notes ?? `# ${session.meta.title}`;
+
+    try {
+      fs.writeFileSync(mdPath, content, 'utf-8');
+    } catch (err) {
+      vscode.window.showWarningMessage(`Incident Investigator: could not write note to disk — ${err}`);
+    }
   }
 
   /**

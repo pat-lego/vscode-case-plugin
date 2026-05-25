@@ -24,6 +24,7 @@ class FilterableCasesProvider implements vscode.TreeDataProvider<CaseItem> {
 
   constructor(protected caseManager: CaseManager, protected showResolved: boolean) {
     this.caseManager.onActiveChange(() => this.changeEmitter.fire(undefined));
+    this.caseManager.onCaseUpdated(() => this.changeEmitter.fire(undefined));
   }
 
   setFilter(q: string) {

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { parseThreadDump } from '@incident-investigator/core';
+import { parseThreadDump, extractSignals } from '@incident-investigator/core';
 import { AnalysisService, extractTimestamp } from '../services/analysis-service';
 
 export class StaticAnalysisPanel {
@@ -58,9 +58,54 @@ export class StaticAnalysisPanel {
 
         const findings = signals.length > 0 ? analysisService.rerun(signals) : [];
 
+        // Build thread-level detail for display
+        let threadDetails = null;
+        if (signals.length > 0) {
+          const extracted = extractSignals(signals);
+          const { summary, threadDumps } = extracted;
+
+          // Top blocked/waiting stack fingerprints
+          const topFingerprints = (summary.dominantFingerprints ?? [])
+            .filter(fp => fp.state === 'BLOCKED' || fp.state === 'WAITING' || fp.state === 'TIMED_WAITING')
+            .slice(0, 8)
+            .map(fp => ({
+              topFrame: fp.topFrame,
+              count: fp.count,
+              state: fp.state,
+              threadNames: fp.threadNames.slice(0, 6)
+            }));
+
+          // Blocked monitors across all dumps, deduplicated and sorted
+          const monitorMap = new Map<string, { monitorClass: string; waitingThreadCount: number; lockHolderThread?: string }>();
+          for (const dump of threadDumps) {
+            for (const m of dump.blockedMonitors) {
+              const prev = monitorMap.get(m.monitorAddress);
+              if (!prev || m.waitingThreadCount > prev.waitingThreadCount) {
+                monitorMap.set(m.monitorAddress, {
+                  monitorClass: m.monitorClass,
+                  waitingThreadCount: m.waitingThreadCount,
+                  lockHolderThread: m.lockHolderThread
+                });
+              }
+            }
+          }
+          const topMonitors = Array.from(monitorMap.values())
+            .sort((a, b) => b.waitingThreadCount - a.waitingThreadCount)
+            .slice(0, 5);
+
+          threadDetails = {
+            totalThreadCount: summary.totalThreadCount,
+            blockedThreadCount: summary.blockedThreadCount,
+            waitingThreadCount: summary.waitingThreadCount,
+            topFingerprints,
+            topMonitors
+          };
+        }
+
         panel.webview.postMessage({
           type: 'results',
           findings,
+          threadDetails,
           counts: {
             threadDumps: signals.length,
             logs: logFiles.length,
@@ -128,6 +173,20 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
 .finding-body{padding:8px 12px;font-size:11px;border-top:1px solid var(--vscode-panel-border);display:none;color:var(--vscode-descriptionForeground);line-height:1.8}
 .finding-card.open .finding-body{display:block}
 .no-findings{font-size:11px;color:var(--vscode-descriptionForeground);padding:20px 16px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:3px;line-height:1.7}
+.thread-details{margin-top:20px}
+.thread-section{border:1px solid var(--vscode-panel-border);border-radius:3px;margin-bottom:10px;overflow:hidden}
+.thread-section-hdr{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:6px 12px;background:var(--vscode-sideBar-background);color:var(--vscode-descriptionForeground);border-bottom:1px solid var(--vscode-panel-border)}
+.thread-row{padding:7px 12px;border-bottom:1px solid var(--vscode-panel-border);font-size:11px;line-height:1.6}
+.thread-row:last-child{border-bottom:none}
+.thread-frame{font-family:var(--vscode-editor-font-family,monospace);font-size:10px;color:var(--vscode-foreground);margin-bottom:3px;word-break:break-all}
+.thread-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.thread-count{font-weight:700;color:var(--vscode-foreground)}
+.state-tag{font-size:9px;font-weight:700;padding:1px 5px;border-radius:2px;letter-spacing:.04em}
+.state-BLOCKED{background:#f14c4c22;color:#f14c4c}
+.state-WAITING,.state-TIMED_WAITING{background:#cca70022;color:#cca700}
+.thread-names{font-size:10px;color:var(--vscode-descriptionForeground);word-break:break-word}
+.monitor-class{font-family:var(--vscode-editor-font-family,monospace);font-size:10px;color:var(--vscode-foreground);word-break:break-all;margin-bottom:2px}
+.monitor-holder{font-size:10px;color:var(--vscode-descriptionForeground)}
 </style>
 </head>
 <body>
@@ -192,6 +251,7 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
   <div class="results-title">Results</div>
   <div id="summary-box"></div>
   <div id="findings-list"></div>
+  <div id="thread-details"></div>
 </div>
 
 <script nonce="${nonce}">
@@ -323,6 +383,64 @@ function renderResults(m) {
       '<div class="finding-body">' + (evLines || '<em>No supporting evidence details.</em>') + '</div>';
     listEl.appendChild(card);
   });
+
+  // Thread details
+  var tdEl = document.getElementById('thread-details');
+  tdEl.innerHTML = '';
+  var td = m.threadDetails;
+  if (td) {
+    var html = '<div class="thread-details">';
+    html += '<div class="results-title" style="margin-top:16px">Thread Details</div>';
+
+    // Stats row
+    html += '<div class="summary-box" style="margin-bottom:12px"><div class="summary-row">';
+    html += '<strong>' + td.totalThreadCount + '</strong>&nbsp;total threads &nbsp;·&nbsp; ';
+    html += '<span style="color:#f14c4c;font-weight:700">' + td.blockedThreadCount + ' BLOCKED</span> &nbsp;·&nbsp; ';
+    html += '<span style="color:#cca700;font-weight:700">' + td.waitingThreadCount + ' WAITING</span>';
+    html += '</div></div>';
+
+    // Dominant stacks
+    if (td.topFingerprints && td.topFingerprints.length) {
+      html += '<div class="thread-section">';
+      html += '<div class="thread-section-hdr">Dominant Blocked / Waiting Stacks</div>';
+      td.topFingerprints.forEach(function(fp) {
+        var stateClass = 'state-' + fp.state;
+        var names = (fp.threadNames || []).join(', ');
+        html += '<div class="thread-row">';
+        html += '<div class="thread-meta">';
+        html += '<span class="state-tag ' + stateClass + '">' + esc(fp.state) + '</span>';
+        html += '<span class="thread-count">' + fp.count + ' thread' + (fp.count !== 1 ? 's' : '') + '</span>';
+        html += '</div>';
+        if (fp.topFrame) {
+          html += '<div class="thread-frame">' + esc(fp.topFrame) + '</div>';
+        }
+        if (names) {
+          html += '<div class="thread-names">Threads: ' + esc(names) + (fp.threadNames.length < fp.count ? ' …' : '') + '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // Blocked monitors
+    if (td.topMonitors && td.topMonitors.length) {
+      html += '<div class="thread-section">';
+      html += '<div class="thread-section-hdr">Lock Contention (Blocked Monitors)</div>';
+      td.topMonitors.forEach(function(mon) {
+        html += '<div class="thread-row">';
+        html += '<div class="thread-meta"><span class="thread-count">' + mon.waitingThreadCount + ' waiting</span></div>';
+        html += '<div class="monitor-class">' + esc(mon.monitorClass) + '</div>';
+        if (mon.lockHolderThread) {
+          html += '<div class="monitor-holder">Held by: ' + esc(mon.lockHolderThread) + '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    html += '</div>';
+    tdEl.innerHTML = html;
+  }
 
   resultsEl.scrollIntoView({ behavior: 'smooth' });
 }
