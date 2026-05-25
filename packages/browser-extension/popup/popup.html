@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Incident Investigator</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:#cccccc;background:#1e1e1e;width:280px;padding:0}
+.header{padding:10px 14px 8px;border-bottom:1px solid #333;display:flex;align-items:center;gap:8px}
+.header-title{font-weight:600;font-size:13px;flex:1}
+.dot{width:8px;height:8px;border-radius:50%;background:#555;flex-shrink:0}
+.dot.on{background:#4ec9b0}
+.body{padding:10px 14px}
+.section{margin-bottom:10px}
+.label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-bottom:4px}
+.case-box{background:#252526;border:1px solid #333;border-radius:3px;padding:7px 10px}
+.case-id{font-size:11px;font-weight:600;color:#9cdcfe;font-family:monospace}
+.case-title{font-size:12px;color:#cccccc;margin-top:2px}
+.no-case{font-size:12px;color:#666;font-style:italic}
+.count{font-size:11px;color:#888;margin-top:4px}
+.btn{display:block;width:100%;padding:7px;background:#0e639c;color:#fff;border:none;border-radius:3px;font-size:12px;font-family:inherit;cursor:pointer;text-align:center;margin-bottom:6px}
+.btn:hover{background:#1177bb}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.secondary{background:#2d2d2d;color:#cccccc;border:1px solid #444}
+.btn.secondary:hover{background:#3a3a3a}
+.port-row{display:flex;gap:6px;align-items:center;margin-top:8px}
+.port-row input{flex:1;padding:4px 7px;background:#252526;color:#cccccc;border:1px solid #444;border-radius:3px;font-size:11px;font-family:monospace}
+.port-row .btn{width:auto;padding:4px 10px;margin:0}
+.status-text{font-size:11px;color:#888;text-align:center;padding:4px 0}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="dot" id="dot"></div>
+  <span class="header-title">Incident Investigator</span>
+  <span id="status-label" style="font-size:11px;color:#888">Disconnected</span>
+</div>
+<div class="body">
+  <div class="section">
+    <div class="label">Active Case</div>
+    <div id="case-box" class="case-box">
+      <div class="no-case" id="no-case">No active case — open an investigation in VS Code</div>
+      <div id="case-info" style="display:none">
+        <div class="case-id" id="case-id"></div>
+        <div class="case-title" id="case-title"></div>
+        <div class="count" id="capture-count"></div>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn" id="capture-btn" onclick="captureTab()" disabled>Capture This Page</button>
+  <button class="btn secondary" id="switch-btn" style="display:none">Switch Case ▾</button>
+
+  <div class="port-row">
+    <input type="number" id="port-input" placeholder="Port (7734)" min="1024" max="65535">
+    <button class="btn secondary" onclick="updatePort()">Set</button>
+  </div>
+  <div class="status-text" id="feedback"></div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
