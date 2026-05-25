@@ -75,6 +75,7 @@
       { "command": "investigator.filterOpenCases", "title": "Filter Open Cases", "icon": "$(search)" },
       { "command": "investigator.filterClosedCases", "title": "Filter Closed Cases", "icon": "$(search)" },
       { "command": "investigator.viewSignature", "title": "View Signature" },
+      { "command": "investigator.editSignature", "title": "Edit Signature", "icon": "$(edit)" },
       { "command": "investigator.newSignature", "title": "New Signature", "icon": "$(add)" }
     ],
     "menus": {
@@ -129,7 +130,12 @@
         {
           "command": "investigator.viewSignature",
           "when": "view == investigator.signatures && viewItem == signature",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "investigator.editSignature",
+          "when": "view == investigator.signatures && viewItem == signature",
+          "group": "navigation@2"
         }
       ]
     },

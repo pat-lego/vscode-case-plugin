@@ -3,15 +3,15 @@ import { Signature } from '@incident-investigator/core';
 import { SignatureService } from '../services/signature-service';
 
 export class ManualSignatureBuilderPanel {
-  static show(context: vscode.ExtensionContext, sigService: SignatureService) {
+  static show(context: vscode.ExtensionContext, sigService: SignatureService, existing?: Signature) {
     const panel = vscode.window.createWebviewPanel(
       'investigator.manualSignatureBuilder',
-      'New Signature',
+      existing ? `Edit: ${existing.name}` : 'New Signature',
       vscode.ViewColumn.Beside,
       { enableScripts: true }
     );
 
-    panel.webview.html = buildHtml();
+    panel.webview.html = buildHtml(existing);
 
     panel.webview.onDidReceiveMessage(msg => {
       if (msg.type === 'save') {
@@ -27,7 +27,7 @@ export class ManualSignatureBuilderPanel {
         };
         const saved = sigService.saveSignature(sig);
         if (saved) {
-          vscode.window.showInformationMessage(`Signature "${sig.name}" saved.`);
+          vscode.window.showInformationMessage(`Signature "${sig.name}" saved (v${sig.version}).`);
           panel.dispose();
         }
       }
@@ -38,7 +38,17 @@ export class ManualSignatureBuilderPanel {
   }
 }
 
-function buildHtml(): string {
+function bumpVersionStr(v: string): string {
+  const parts = (v || '1.0').split('.');
+  const major = parseInt(parts[0], 10) || 1;
+  const minor = parseInt(parts[1] ?? '0', 10);
+  return `${major}.${minor + 1}`;
+}
+
+function buildHtml(existing?: Signature): string {
+  const isEdit = !!existing;
+  const initialJson = existing ? JSON.stringify(existing) : 'null';
+  const newVersion = existing ? bumpVersionStr(existing.version || '1.0') : '1.0';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -126,17 +136,18 @@ pre{
 </style>
 </head>
 <body>
-<h1>New Signature</h1>
+<h1>${isEdit ? 'Edit Signature' : 'New Signature'}</h1>
+${isEdit ? '<div style="font-size:11px;color:var(--vscode-descriptionForeground);margin-bottom:14px;padding:5px 8px;background:var(--vscode-sideBar-background);border:1px solid var(--vscode-panel-border);border-radius:3px">Editing existing signature — ID is locked. Version will be auto-incremented to <strong>' + newVersion + '</strong> on save.</div>' : ''}
 
 <h2>Identity</h2>
 <div class="two-col">
   <div class="field-row">
-    <label for="sig-id">ID (kebab-case)</label>
-    <input id="sig-id" placeholder="e.g. high-blocked-thread-ratio" oninput="onInput()">
+    <label for="sig-id">ID (kebab-case)${isEdit ? ' — locked' : ''}</label>
+    <input id="sig-id" placeholder="e.g. high-blocked-thread-ratio" oninput="onInput()" ${isEdit ? 'readonly style="opacity:.55;cursor:not-allowed"' : ''}>
   </div>
   <div class="field-row">
-    <label for="sig-version">Version</label>
-    <input id="sig-version" value="1.0" oninput="onInput()">
+    <label for="sig-version">Version${isEdit ? ' — auto-incremented' : ''}</label>
+    <input id="sig-version" value="${newVersion}" oninput="onInput()" ${isEdit ? 'readonly style="opacity:.55;cursor:not-allowed"' : ''}>
   </div>
 </div>
 <div class="field-row">
@@ -170,7 +181,7 @@ pre{
 </div>
 
 <div class="actions">
-  <button class="btn primary" id="save-btn">Save to Signature Library</button>
+  <button class="btn primary" id="save-btn">${isEdit ? 'Save Changes' : 'Save to Signature Library'}</button>
   <button class="btn" id="cancel-btn">Cancel</button>
 </div>
 
@@ -443,7 +454,26 @@ document.getElementById('save-btn').addEventListener('click', function() { save(
 document.getElementById('cancel-btn').addEventListener('click', function() { cancel(); });
 
 // ── Initialise ─────────────────────────────────────────────────────────────
-addCondition();
+var INITIAL_DATA = ${initialJson};
+if (INITIAL_DATA) {
+  document.getElementById('sig-id').value = INITIAL_DATA.id || '';
+  document.getElementById('sig-name').value = INITIAL_DATA.name || '';
+  document.getElementById('sig-desc').value = INITIAL_DATA.description || '';
+  document.getElementById('next-steps').value = (INITIAL_DATA.nextSteps || []).join('\\n');
+  document.getElementById('related').value = (INITIAL_DATA.relatedSignatures || []).join(', ');
+  // Load conditions from existing signature
+  conditions = [];
+  nextId = 0;
+  var ecs = INITIAL_DATA.conditions || [];
+  for (var ei = 0; ei < ecs.length; ei++) {
+    var ec = ecs[ei];
+    conditions.push({ id: nextId++, field: ec.field || 'blockedThreadCount', operator: ec.operator || 'gte', value: ec.value !== undefined ? ec.value : '', description: ec.description || '' });
+  }
+  if (conditions.length === 0) addCondition();
+  else renderConditions();
+} else {
+  addCondition();
+}
 onInput();
 </script>
 </body>

@@ -1,12 +1,11 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as cp from 'child_process';
 import { CaseManager, CaseSession } from './services/case-manager';
 import { SignatureService } from './services/signature-service';
-import { AnalysisService, detectEvidenceType, extractTimestamp } from './services/analysis-service';
-import { Signature, parseThreadDump, ThreadDumpSignals } from '@incident-investigator/core';
+import { AnalysisService } from './services/analysis-service';
+import { Signature } from '@incident-investigator/core';
 import { BridgeServer } from './services/bridge-server';
 import { OpenCasesProvider, ClosedCasesProvider, CaseItem } from './providers/sidebar.provider';
 import { SignatureProvider, SignatureItem } from './providers/signature.provider';
@@ -17,6 +16,7 @@ import { SignatureViewerPanel } from './panels/signature-viewer.webview';
 import { ManualSignatureBuilderPanel } from './panels/manual-signature-builder.webview';
 import { CaseResolutionPanel } from './panels/case-resolution.webview';
 import { ClaudeReviewPanel } from './panels/claude-review.webview';
+import { StaticAnalysisPanel } from './panels/static-analysis.webview';
 
 export function activate(context: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Incident Investigator');
@@ -99,7 +99,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('investigator.buildSignature', (caseId: string, finding: unknown) =>
       SignatureBuilderPanel.show(context, caseId, finding, caseManager, sigService)
     ),
-    vscode.commands.registerCommand('investigator.viewSignature', (sigId: string) => {
+    vscode.commands.registerCommand('investigator.viewSignature', (sigIdOrItem: string | SignatureItem) => {
+      const sigId = typeof sigIdOrItem === 'string' ? sigIdOrItem : sigIdOrItem?.sigId ?? '';
       const sig = sigService.getById(sigId);
       if (!sig) { vscode.window.showWarningMessage(`Signature "${sigId}" not found.`); return; }
       SignatureViewerPanel.show(context, sig);
@@ -184,32 +185,13 @@ export function activate(context: vscode.ExtensionContext) {
       terminal.show();
       terminal.sendText(`${cliCmd} < "${tmpFile}"`);
     }),
-    vscode.commands.registerCommand('investigator.runStaticAnalysis', async (item?: CaseItem) => {
-      const caseId = item?.caseId ?? caseManager.getActiveCaseId();
-      if (!caseId) { vscode.window.showWarningMessage('No active case. Open an investigation first.'); return; }
-      const session = caseManager.getSession(caseId);
-      if (!session) return;
-
-      if (session.threadDumpSignals.length === 0) {
-        vscode.window.showInformationMessage('No thread dumps in this case — add thread dump evidence first.');
-        return;
-      }
-
-      const findings = analysisService.reanalyzeCaseWithLatestSignatures(caseId);
-      if (findings.length === 0) {
-        vscode.window.showInformationMessage(`Static analysis complete — no signature matches found in ${caseId}.`);
-        return;
-      }
-
-      const items: vscode.QuickPickItem[] = findings.map(f => ({
-        label: `[${f.confidence.toUpperCase()}] ${f.signatureName}`,
-        detail: f.evidence?.join(' • ') ?? '',
-        description: f.signatureId
-      }));
-      vscode.window.showQuickPick(items, {
-        placeHolder: `${findings.length} signature match${findings.length !== 1 ? 'es' : ''} found in ${caseId}`,
-        canPickMany: false
-      });
+    vscode.commands.registerCommand('investigator.runStaticAnalysis', () => {
+      StaticAnalysisPanel.show(context, analysisService);
+    }),
+    vscode.commands.registerCommand('investigator.editSignature', (item: SignatureItem) => {
+      const sig = sigService.getById(item.sigId);
+      if (!sig) { vscode.window.showWarningMessage(`Signature "${item.sigId}" not found.`); return; }
+      ManualSignatureBuilderPanel.show(context, sigService, sig);
     }),
     statusItem
   );

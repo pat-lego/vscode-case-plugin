@@ -157,6 +157,7 @@ export class CaseManager {
     session.meta.title = title;
     session.meta.updatedAt = new Date();
     this.save(caseId);
+    this.onActiveChangeEmitter.fire(this.activeCaseId);
   }
 
   resolveCase(caseId: string, resolution: string, resolvedBy: string) {
