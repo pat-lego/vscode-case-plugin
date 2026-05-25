@@ -97,6 +97,10 @@
         "investigator.claudeApiKey": {
           "type": "string",
           "description": "Anthropic API key for Claude case review (optional)"
+        },
+        "investigator.casePath": {
+          "type": "string",
+          "description": "The location for case folders"
         }
       }
     }
@@ -107,9 +111,11 @@
   },
   "dependencies": {
     "@incident-investigator/core": "*",
+    "js-yaml": "^4.1.0",
     "ws": "^8.16.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.5.10",
     "typescript": "^5.4.0"

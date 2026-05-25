@@ -1,0 +1,23 @@
+"http-nio-8080-exec-1" #15 prio=5 os_prio=0 tid=0x00007f001 nid=0x1001 runnable [0x00007f100]
+   java.lang.Thread.State: RUNNABLE
+	at com.example.controller.SearchController.search(SearchController.java:55)
+	at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1000)
+	at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:897)
+
+"http-nio-8080-exec-2" #16 prio=5 os_prio=0 tid=0x00007f002 nid=0x1002 runnable [0x00007f200]
+   java.lang.Thread.State: RUNNABLE
+	at com.example.controller.SearchController.search(SearchController.java:55)
+	at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1000)
+	at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:897)
+
+"http-nio-8080-exec-3" #17 prio=5 os_prio=0 tid=0x00007f003 nid=0x1003 in Object.wait() [0x00007f300]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(Native Method)
+	at java.util.concurrent.LinkedBlockingQueue.take(LinkedBlockingQueue.java:442)
+	at org.apache.tomcat.util.threads.TaskQueue.take(TaskQueue.java:103)
+
+"GC task thread#0 (ParallelGC)" os_prio=0 tid=0x00007f010 nid=0x1010 runnable
+   java.lang.Thread.State: RUNNABLE
+
+"GC task thread#1 (ParallelGC)" os_prio=0 tid=0x00007f011 nid=0x1011 runnable
+   java.lang.Thread.State: RUNNABLE

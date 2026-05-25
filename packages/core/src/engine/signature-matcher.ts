@@ -32,7 +32,7 @@ function evaluate(signature: Signature, signals: ExtractedSignals): Finding {
     confidenceScore: score,
     matchedConditions: matched,
     unmatchedConditions: unmatched,
-    evidence: buildEvidence(signature, signals, matched),
+    evidence: buildEvidence(matched),
     nextSteps: signature.nextSteps,
     relatedSignatures: signature.relatedSignatures
   };
@@ -49,26 +49,15 @@ function evaluateCondition(
   return { matched, value };
 }
 
+/**
+ * Resolves a signal field name to its current value by direct property lookup on the
+ * summary. No switch/case — any primitive field added to ThreadDumpSummary is
+ * automatically available to signature YAML without touching this file.
+ */
 function resolveField(field: string, signals: ExtractedSignals): number | string | undefined {
-  const { summary, threadDumps } = signals;
-  switch (field) {
-    case 'totalThreadCount':           return summary.maxThreadCount;
-    case 'blockedThreadCount':         return Math.max(...threadDumps.map(d => d.stateCounts.BLOCKED ?? 0));
-    case 'waitingThreadCount':         return Math.max(...threadDumps.map(d => d.stateCounts.WAITING ?? 0));
-    case 'ioThreadCount':              return Math.max(...threadDumps.map(d => d.ioThreadCount));
-    case 'threadCountAnomaly':         return summary.threadCountAnomaly ? 1 : 0;
-    case 'ioSaturationDetected':       return summary.ioSaturationDetected ? 1 : 0;
-    case 'dominantFingerprintCount':   return summary.dominantFingerprints[0]?.count ?? 0;
-    case 'dominantFingerprintRatio':   return summary.maxThreadCount > 0
-                                         ? (summary.dominantFingerprints[0]?.count ?? 0) / summary.maxThreadCount
-                                         : 0;
-    case 'persistentBlockedMonitors':   return summary.persistentBlockedMonitors.length;
-    case 'maxBlockedOnSingleMonitor':   return summary.maxBlockedOnSingleMonitor;
-    case 'topBlockedMonitorClass':      return summary.topBlockedMonitorClass;
-    case 'blockedMonitorCount':         return summary.blockedMonitorCount;
-    case 'gcThreadCount':               return summary.gcThreadCount;
-    default:                            return undefined;
-  }
+  const val = (signals.summary as unknown as Record<string, unknown>)[field];
+  if (typeof val === 'number' || typeof val === 'string') return val;
+  return undefined;
 }
 
 function compare(value: number | string, operator: SignatureCondition['operator'], target: number | string): boolean {
@@ -81,11 +70,19 @@ function compare(value: number | string, operator: SignatureCondition['operator'
     case 'lte':      return n <= t;
     case 'eq':       return value === target;
     case 'contains': return String(value).includes(String(target));
-    case 'matches':  return new RegExp(String(target)).test(String(value));
+    case 'matches': {
+      // Support (?i) inline flag prefix (PCRE syntax used in YAML signatures).
+      // JavaScript uses RegExp constructor flags instead, so convert before compiling.
+      let pattern = String(target);
+      let flags = '';
+      const inlineFlag = pattern.match(/^\(\?([a-z]+)\)([\s\S]*)/);
+      if (inlineFlag) { flags = inlineFlag[1]; pattern = inlineFlag[2]; }
+      return new RegExp(pattern, flags).test(String(value));
+    }
     default:         return false;
   }
 }
 
-function buildEvidence(signature: Signature, signals: ExtractedSignals, matched: MatchedCondition[]): string[] {
+function buildEvidence(matched: MatchedCondition[]): string[] {
   return matched.map(c => `${c.description}: ${c.observedValue}`);
 }

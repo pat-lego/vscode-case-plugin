@@ -8,6 +8,7 @@ interface RawThread {
   state: ThreadState;
   frames: string[];
   waitingOnMonitor?: string;
+  waitingOnMonitorClass?: string;
   lockedMonitors: string[];
 }
 
@@ -41,6 +42,7 @@ function parseThreadBlock(block: string): RawThread | null {
   const frames: string[] = [];
   const lockedMonitors: string[] = [];
   let waitingOnMonitor: string | undefined;
+  let waitingOnMonitorClass: string | undefined;
 
   for (const line of lines) {
     const stateMatch = line.match(/java\.lang\.Thread\.State:\s+(\w+)/);
@@ -52,14 +54,19 @@ function parseThreadBlock(block: string): RawThread | null {
       frames.push(line.replace(/^at\s+/, ''));
     }
 
-    const lockMatch = line.match(/- waiting to lock <(0x[0-9a-f]+)>/);
-    if (lockMatch) waitingOnMonitor = lockMatch[1];
+    // Capture both the monitor address and the class name from the same lock line:
+    //   - waiting to lock <0xABCD> (a com.example.SomeClass)
+    const lockMatch = line.match(/- waiting to lock <(0x[0-9a-f]+)>(?:\s+\(a ([^)]+)\))?/);
+    if (lockMatch) {
+      waitingOnMonitor = lockMatch[1];
+      if (lockMatch[2]) waitingOnMonitorClass = lockMatch[2];
+    }
 
     const heldMatch = line.match(/- locked <(0x[0-9a-f]+)>/);
     if (heldMatch) lockedMonitors.push(heldMatch[1]);
   }
 
-  return { name, state, frames, waitingOnMonitor, lockedMonitors };
+  return { name, state, frames, waitingOnMonitor, waitingOnMonitorClass, lockedMonitors };
 }
 
 function normalizeState(raw: string): ThreadState {
@@ -137,7 +144,9 @@ function buildBlockedMonitors(threads: RawThread[]): BlockedMonitor[] {
 
   return Array.from(waitMap.entries()).map(([addr, waiters]) => {
     const holder = threads.find(t => t.lockedMonitors.includes(addr));
-    const monitorClass = extractMonitorClass(waiters[0]?.frames ?? []);
+    // Use the class captured directly from the "- waiting to lock <addr> (a ClassName)" line.
+    // Falling back to 'unknown' if the class was not present in the dump.
+    const monitorClass = waiters[0]?.waitingOnMonitorClass ?? 'unknown';
 
     return {
       monitorAddress: addr,
@@ -155,12 +164,4 @@ function extractUrlPattern(frames: string[]): string | undefined {
     if (match) return `${match[1]} ${match[2]}`;
   }
   return undefined;
-}
-
-function extractMonitorClass(frames: string[]): string {
-  for (const frame of frames) {
-    const match = frame.match(/\(a ([^)]+)\)/);
-    if (match) return match[1];
-  }
-  return 'unknown';
 }

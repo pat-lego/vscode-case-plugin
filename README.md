@@ -389,21 +389,57 @@ Run **Reload Signatures** (click the refresh icon in the Signatures panel in the
 
 ### Signature condition fields
 
-These are the measurable values the engine can evaluate:
+Every field below is a named scalar computed by the signal extractor from the raw thread dump data. A condition in a signature YAML references one field by name. The engine resolves each field by direct property lookup on the computed signal summary — no code changes are needed to use any of these fields in a new or modified signature.
 
-| Field | Type | Description |
+#### Thread count signals
+
+| Field | Type | How it is computed |
 |---|---|---|
-| `totalThreadCount` | number | Maximum thread count across all dumps in the case |
-| `blockedThreadCount` | number | Maximum BLOCKED thread count across all dumps |
-| `waitingThreadCount` | number | Maximum WAITING thread count across all dumps |
-| `ioThreadCount` | number | Maximum IO-bound thread count (java.io / sun.nio) |
-| `threadCountAnomaly` | 0 or 1 | 1 if thread count exceeds `investigator.threadCountThreshold` |
-| `ioSaturationDetected` | 0 or 1 | 1 if >15% of threads are in IO operations |
-| `dominantFingerprintCount` | number | Thread count of the most-common stack fingerprint |
-| `dominantFingerprintRatio` | 0.0–1.0 | Fraction of threads on the most-common fingerprint |
-| `persistentBlockedMonitors` | number | Count of blocked monitors that appear in 2+ dumps |
+| `totalThreadCount` | number | Maximum thread count observed across all dumps in the case |
+| `avgThreadCount` | number | Average thread count across all dumps |
+| `blockedThreadCount` | number | Maximum count of BLOCKED threads in any single dump |
+| `waitingThreadCount` | number | Maximum count of WAITING or TIMED_WAITING threads in any single dump |
+| `ioThreadCount` | number | Maximum count of threads with `java.io`, `sun.nio`, or `java.net` frames in any dump |
+| `gcThreadCount` | number | Maximum count of JVM GC subsystem threads in any dump (threads named "GC task thread", "G1 Conc", "ZWorker", "Shenandoah", etc.) |
 
-Available operators: `gt`, `gte`, `lt`, `lte`, `eq`, `contains`, `matches`
+#### Stack fingerprint signals
+
+| Field | Type | How it is computed |
+|---|---|---|
+| `dominantFingerprintCount` | number | Thread count of the single most-common stack fingerprint (threads sharing the same top 3 frames) |
+| `dominantFingerprintRatio` | 0.0–1.0 | `dominantFingerprintCount / totalThreadCount` — fraction of threads on the same code path |
+
+#### Lock and monitor signals
+
+| Field | Type | How it is computed |
+|---|---|---|
+| `maxBlockedOnSingleMonitor` | number | Maximum number of threads waiting on any single monitor address across all dumps |
+| `topBlockedMonitorClass` | string | Java class name of the most-contended monitor object (extracted from the `- waiting to lock <0xADDR> (a ClassName)` line in the dump) |
+| `blockedMonitorCount` | number | Maximum count of distinct monitor addresses with at least one blocked waiter in any single dump |
+| `persistentBlockedMonitors` | number | Count of monitor addresses that appear blocked in 2 or more separate dumps — requires at least two dumps; 0 if only one dump is provided |
+
+#### Anomaly flags
+
+These fields are `0` or `1` and are designed for use with the `eq` operator.
+
+| Field | Type | How it is computed |
+|---|---|---|
+| `threadCountAnomaly` | 0 or 1 | `1` if `totalThreadCount` exceeds the configured `investigator.threadCountThreshold` (default 500), else `0` |
+| `ioSaturationDetected` | 0 or 1 | `1` if the average ratio of IO threads to total threads exceeds 15%, else `0` |
+
+---
+
+### Condition operators
+
+| Operator | Applies to | What it checks |
+|---|---|---|
+| `gt` | number | Field value is strictly greater than the condition value |
+| `gte` | number | Field value is greater than or equal to the condition value |
+| `lt` | number | Field value is strictly less than the condition value |
+| `lte` | number | Field value is less than or equal to the condition value |
+| `eq` | number or string | Field value equals the condition value exactly (use for 0/1 flags) |
+| `contains` | string | Field value contains the condition value as a substring (case-sensitive) |
+| `matches` | string | Field value matches the condition value as a JavaScript regular expression. Prefix with `(?i)` for case-insensitive matching: `value: "(?i)(hikari\|c3p0)"` |
 
 ---
 
@@ -589,12 +625,23 @@ npx tsc --project packages/core/tsconfig.json
 3. Export an `extract(): AdapterResult | null` function that pulls the data
 4. Import and call it in `packages/browser-extension/src/content/index.ts` before the generic fallback
 
+**Running tests:**
+```bash
+npm test --workspace packages/core
+```
+
+Tests cover the thread dump parsers (jstack, IBM J9, generic), the signal extractor, the signature matcher (all operators, confidence scoring, field resolution), and the signature loader IO (write a YAML file to a temp directory, read it back, verify it runs through the matcher). Run them after any change to the core package.
+
 **Adding a new signature condition field:**
 
-1. Add the field to `resolveField()` in `packages/core/src/engine/signature-matcher.ts`
-2. Map it to a value from `ExtractedSignals` or `ThreadDumpSignals`
+The signature matcher is fully data-driven — it resolves fields by direct property lookup on the `ThreadDumpSummary` object. To add a new signal field:
+
+1. Add a scalar (`number` or `string`) property to `ThreadDumpSummary` in `packages/core/src/engine/signal-extractor.ts`
+2. Compute its value in `extractSignals()` and `emptySummary()` in the same file
 3. Rebuild core: `npx tsc --project packages/core/tsconfig.json`
-4. Use the new field in any YAML signature
+4. Use the new field name in any YAML signature condition — no changes to `signature-matcher.ts` are needed
+
+The key constraint: only primitive scalar fields (`number`, `string`) are resolvable by signatures. Array fields on the summary (used internally for evidence building) are silently ignored by the matcher.
 
 **Sharing signatures with the team:**
 

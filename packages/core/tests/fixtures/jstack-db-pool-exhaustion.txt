@@ -1,0 +1,47 @@
+"HikariPool-1 connection adder" #8 prio=5 os_prio=0 tid=0x00007f100 nid=0x3001 runnable [0x00007f100000]
+   java.lang.Thread.State: RUNNABLE
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- locked <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.zaxxer.hikari.pool.HikariDataSource.getConnection(HikariDataSource.java:99)
+
+"http-nio-8080-exec-1" #20 prio=5 os_prio=0 tid=0x00007f201 nid=0x3101 waiting for monitor entry [0x00007f201000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.UserRepository.findById(UserRepository.java:45)
+
+"http-nio-8080-exec-2" #21 prio=5 os_prio=0 tid=0x00007f202 nid=0x3102 waiting for monitor entry [0x00007f202000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.OrderRepository.findByUser(OrderRepository.java:78)
+
+"http-nio-8080-exec-3" #22 prio=5 os_prio=0 tid=0x00007f203 nid=0x3103 waiting for monitor entry [0x00007f203000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.ProductRepository.search(ProductRepository.java:122)
+
+"http-nio-8080-exec-4" #23 prio=5 os_prio=0 tid=0x00007f204 nid=0x3104 waiting for monitor entry [0x00007f204000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.CartRepository.findActive(CartRepository.java:55)
+
+"http-nio-8080-exec-5" #24 prio=5 os_prio=0 tid=0x00007f205 nid=0x3105 waiting for monitor entry [0x00007f205000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.SessionRepository.findByToken(SessionRepository.java:33)
+
+"http-nio-8080-exec-6" #25 prio=5 os_prio=0 tid=0x00007f206 nid=0x3106 waiting for monitor entry [0x00007f206000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.AuditRepository.log(AuditRepository.java:88)
+
+"http-nio-8080-exec-7" #26 prio=5 os_prio=0 tid=0x00007f207 nid=0x3107 waiting for monitor entry [0x00007f207000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)
+	- waiting to lock <0x000000076c001234> (a com.zaxxer.hikari.pool.HikariPool)
+	at com.example.dao.ReportRepository.generate(ReportRepository.java:201)

@@ -40,17 +40,20 @@ function extractThreads(raw: string): RawThread[] {
   let current: RawThread | null = null;
 
   for (const line of lines) {
-    // IBM J9 thread header: 3XMTHREADINFO "thread-name" ...
+    // IBM J9 thread header: 3XMTHREADINFO "thread-name" J9VMThread:... state:R ...
     const headerMatch = line.match(/^3XMTHREADINFO\s+"([^"]+)"/);
     if (headerMatch) {
       if (current) threads.push(current);
       current = { name: headerMatch[1], state: 'RUNNABLE', frames: [] };
+      // State appears on the same header line: ... state:B ...
+      const stateOnHeader = line.match(/state:(\w)/);
+      if (stateOnHeader) current.state = ibmStateToThreadState(stateOnHeader[1]);
       continue;
     }
 
     if (!current) continue;
 
-    // State line: 3XMTHREADINFO3 ... state:R
+    // Some IBM J9 variants put state on a separate 3XMTHREADINFO3 continuation line.
     const stateMatch = line.match(/3XMTHREADINFO3.*state:(\w)/);
     if (stateMatch) {
       current.state = ibmStateToThreadState(stateMatch[1]);

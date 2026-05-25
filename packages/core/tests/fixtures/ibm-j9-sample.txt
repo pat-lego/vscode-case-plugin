@@ -1,0 +1,34 @@
+Java dump file 1TIDATETIME
+1TISIGINFO     Dump Event "user" (00004000) received
+
+3XMTHREADINFO      "http-worker-1" J9VMThread:0x0000000000F00001, omrthread_t:0x00007F0000001001, java/lang/Thread:0x00000000FFF1C001, state:R, prio=5
+3XMTHREADINFO3           Java callstack:
+4XESTACKTRACE                at com/example/controller/ApiController.handle(ApiController.java:42)
+4XESTACKTRACE                at com/example/servlet/DispatcherServlet.service(DispatcherServlet.java:100)
+4XESTACKTRACE                at javax/servlet/http/HttpServlet.service(HttpServlet.java:668)
+NULL
+
+3XMTHREADINFO      "http-worker-2" J9VMThread:0x0000000000F00002, omrthread_t:0x00007F0000001002, java/lang/Thread:0x00000000FFF1C002, state:R, prio=5
+3XMTHREADINFO3           Java callstack:
+4XESTACKTRACE                at com/example/controller/ApiController.handle(ApiController.java:42)
+4XESTACKTRACE                at com/example/servlet/DispatcherServlet.service(DispatcherServlet.java:100)
+4XESTACKTRACE                at javax/servlet/http/HttpServlet.service(HttpServlet.java:668)
+NULL
+
+3XMTHREADINFO      "background-scheduler" J9VMThread:0x0000000000F00003, omrthread_t:0x00007F0000001003, java/lang/Thread:0x00000000FFF1C003, state:W, prio=5
+3XMTHREADINFO3           Java callstack:
+4XESTACKTRACE                at java/lang/Object.wait(Native Method)
+4XESTACKTRACE                at java/util/concurrent/LinkedBlockingQueue.take(LinkedBlockingQueue.java:442)
+4XESTACKTRACE                at java/util/concurrent/ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1067)
+NULL
+
+3XMTHREADINFO      "blocked-worker" J9VMThread:0x0000000000F00004, omrthread_t:0x00007F0000001004, java/lang/Thread:0x00000000FFF1C004, state:B, prio=5
+3XMTHREADINFO3           Java callstack:
+4XESTACKTRACE                at com/example/service/CacheService.refresh(CacheService.java:88)
+4XESTACKTRACE                at com/example/service/DataService.load(DataService.java:55)
+NULL
+
+3XMTHREADINFO      "GC Worker Thread" J9VMThread:0x0000000000F00005, omrthread_t:0x00007F0000001005, java/lang/Thread:0x00000000FFF1C005, state:R, prio=5
+3XMTHREADINFO3           Java callstack:
+4XESTACKTRACE                at com/ibm/j9/gc/GarbageCollector.collect(GarbageCollector.java:10)
+NULL
