@@ -4,7 +4,7 @@ import { SignatureService } from './services/signature-service';
 import { AnalysisService } from './services/analysis-service';
 import { ExportService } from './services/export-service';
 import { BridgeServer } from './services/bridge-server';
-import { SidebarProvider } from './providers/sidebar.provider';
+import { SidebarProvider, CaseItem } from './providers/sidebar.provider';
 import { SignatureProvider } from './providers/signature.provider';
 import { InvestigationWebview } from './providers/investigation.webview';
 import { newCase } from './commands/new-case';
@@ -86,6 +86,24 @@ export function activate(context: vscode.ExtensionContext) {
       sigService.reload();
       sigProvider.refresh();
       vscode.window.showInformationMessage('Signatures reloaded.');
+    }),
+    vscode.commands.registerCommand('investigator.deleteCase', async (item: CaseItem) => {
+      const answer = await vscode.window.showWarningMessage(
+        `Delete case "${item.caseId}"? This will permanently remove the case folder from disk.`,
+        { modal: true },
+        'Delete'
+      );
+      if (answer !== 'Delete') return;
+      caseManager.deleteCase(item.caseId);
+      sidebarProvider.refresh();
+    }),
+    vscode.commands.registerCommand('investigator.openCaseInFinder', (item: CaseItem) => {
+      const dir = caseManager.getCaseDir(item.caseId);
+      if (dir) {
+        vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(dir));
+      } else {
+        vscode.window.showInformationMessage('This case is not stored on disk.');
+      }
     }),
     statusItem
   );

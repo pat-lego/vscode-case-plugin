@@ -1,3 +1,4 @@
+import * as http from 'http';
 import * as vscode from 'vscode';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CaseManager } from './case-manager';
@@ -14,6 +15,7 @@ export interface BridgeCapture {
 }
 
 export class BridgeServer {
+  private httpServer: http.Server | undefined;
   private server: WebSocketServer | undefined;
   private clients = new Set<WebSocket.WebSocket>();
 
@@ -27,17 +29,29 @@ export class BridgeServer {
     private caseManager: CaseManager,
     private analysisService: AnalysisService
   ) {
-    // Broadcast active case whenever it changes
     this.caseManager.onActiveChange(() => this.broadcastActiveCase());
   }
 
   start(port: number) {
     if (this.server) return;
 
+    // HTTP server handles Chrome's Private Network Access preflight (OPTIONS) as
+    // well as any plain HTTP probes from the browser extension.
+    this.httpServer = http.createServer((req, res) => {
+      res.writeHead(req.method === 'OPTIONS' ? 200 : 200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Private-Network': 'true',
+        'Access-Control-Allow-Headers': 'content-type',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Content-Type': 'text/plain',
+      });
+      res.end('Investigation Bridge');
+    });
+
     try {
-      this.server = new WebSocketServer({ port, host: '127.0.0.1' });
+      this.server = new WebSocketServer({ server: this.httpServer });
     } catch {
-      vscode.window.showWarningMessage(`Investigation Bridge: could not start on port ${port}.`);
+      vscode.window.showWarningMessage(`Investigation Bridge: could not create WebSocket server on port ${port}.`);
       return;
     }
 
@@ -65,11 +79,23 @@ export class BridgeServer {
         );
       }
     });
+
+    this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        vscode.window.showWarningMessage(
+          `Investigation Bridge: port ${port} is in use. Change investigator.bridgePort and reload.`
+        );
+      }
+    });
+
+    this.httpServer.listen(port, '127.0.0.1');
   }
 
   stop() {
     this.server?.close();
+    this.httpServer?.close();
     this.server = undefined;
+    this.httpServer = undefined;
     this.clients.clear();
   }
 

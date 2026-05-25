@@ -33,12 +33,10 @@ export class CaseManager {
     }
   }
 
-  createCase(id: string, title: string): CaseSession {
+  createCase(id: string, title: string, targetCasePath?: string): CaseSession {
     const now = new Date();
     const meta: Case = { id, title, createdAt: now, updatedAt: now, status: 'open', evidence: [] };
-    // New cases are written to the first configured path.
-    // Falls back to '' (globalState) when no paths are configured.
-    const casePath = this.getCasePaths()[0] ?? '';
+    const casePath = targetCasePath ?? this.getCasePaths()[0] ?? '';
     const session: CaseSession = { meta, threadDumpSignals: [], findings: [], casePath };
     this.sessions.set(id, session);
     this.activeCaseId = id;
@@ -118,6 +116,36 @@ export class CaseManager {
     this.save(caseId);
   }
 
+  deleteCase(caseId: string): boolean {
+    const session = this.sessions.get(caseId);
+    if (!session) return false;
+
+    if (session.casePath) {
+      const caseDir = path.join(session.casePath, caseId);
+      if (fs.existsSync(caseDir)) {
+        try {
+          fs.rmSync(caseDir, { recursive: true, force: true });
+        } catch (err) {
+          vscode.window.showWarningMessage(`Incident Investigator: could not delete case folder — ${err}`);
+        }
+      }
+    }
+
+    this.sessions.delete(caseId);
+    if (this.activeCaseId === caseId) {
+      this.activeCaseId = null;
+      this.onActiveChangeEmitter.fire(null);
+    }
+    return true;
+  }
+
+  /** Returns the on-disk directory for a case, or undefined if not disk-backed. */
+  getCaseDir(caseId: string): string | undefined {
+    const session = this.sessions.get(caseId);
+    if (!session || !session.casePath) return undefined;
+    return path.join(session.casePath, caseId);
+  }
+
   /**
    * Returns the list of configured case root paths, filtering out blanks.
    * Each path is a folder whose immediate subdirectories are individual cases.
@@ -168,7 +196,6 @@ export class CaseManager {
         if (!entry.isDirectory()) continue;
         const caseId = entry.name;
 
-        // First path wins — do not overwrite a case already loaded.
         if (this.sessions.has(caseId)) continue;
 
         const caseDir = path.join(casePath, caseId);
@@ -178,6 +205,11 @@ export class CaseManager {
         try {
           const result = this.parseCaseFile(mdPath, caseDir);
           if (result) {
+            // Supplement with any non-MD files present in the case directory that
+            // are not already tracked in the frontmatter evidence list.
+            const extra = scanDirForEvidence(caseDir, result.meta.evidence);
+            result.meta.evidence.push(...extra);
+
             this.sessions.set(result.meta.id, {
               meta: result.meta,
               threadDumpSignals: [],
@@ -187,7 +219,7 @@ export class CaseManager {
             });
           }
         } catch {
-          // Malformed case file — skip silently and leave the folder untouched
+          // Malformed case file — skip silently
         }
       }
     }
@@ -242,9 +274,11 @@ export class CaseManager {
 
     // Plain Obsidian note — no case_id frontmatter.
     // Load as read-only so the extension never overwrites the user's file.
+    // Expose the MD body as notes so it is visible in the notes pane.
     const caseId = path.basename(caseDir);
     const stats = fs.statSync(mdPath);
     const title = extractFirstHeading(content) ?? caseId;
+    const body = extractMdBody(content);
 
     return {
       meta: {
@@ -254,6 +288,7 @@ export class CaseManager {
         updatedAt: stats.mtime,
         status: 'open',
         evidence: [],
+        notes: body || undefined,
       },
       readonly: true,
     };
@@ -277,21 +312,23 @@ export class CaseManager {
 
     const { meta } = session;
 
-    const evidenceEntries = meta.evidence.map(ev => {
-      let storedFile: string | null = null;
-      if (ev.rawContent && ev.type !== 'screenshot') {
-        storedFile = `${ev.id}.txt`;
-        fs.writeFileSync(path.join(caseDir, storedFile), ev.rawContent, 'utf-8');
-      }
-      return {
-        id: ev.id,
-        type: ev.type,
-        source: ev.source,
-        captured_at: ev.capturedAt.toISOString(),
-        file_path: ev.filePath,
-        stored_file: storedFile,
-      };
-    });
+    const evidenceEntries = meta.evidence
+      .filter(ev => !ev.id.startsWith('disk-'))  // skip auto-scanned files (not managed by extension)
+      .map(ev => {
+        let storedFile: string | null = null;
+        if (ev.rawContent && ev.type !== 'screenshot') {
+          storedFile = `${ev.id}.txt`;
+          fs.writeFileSync(path.join(caseDir, storedFile), ev.rawContent, 'utf-8');
+        }
+        return {
+          id: ev.id,
+          type: ev.type,
+          source: ev.source,
+          captured_at: ev.capturedAt.toISOString(),
+          file_path: ev.filePath,
+          stored_file: storedFile,
+        };
+      });
 
     const frontmatter = yaml.dump(
       {
@@ -352,6 +389,58 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
 function extractFirstHeading(content: string): string | null {
   const match = content.match(/^#{1,3}\s+(.+)$/m);
   return match ? match[1].trim() : null;
+}
+
+/** Returns the body of a markdown file with the YAML frontmatter stripped. */
+function extractMdBody(content: string): string {
+  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
+  return match ? content.slice(match[0].length).trim() : content.trim();
+}
+
+/**
+ * Scans a case directory for non-MD files that are not already tracked in the
+ * evidence list, and returns them as EvidenceItem entries.
+ */
+function scanDirForEvidence(caseDir: string, existing: EvidenceItem[]): EvidenceItem[] {
+  const trackedPaths = new Set(existing.map(e => e.filePath).filter(Boolean));
+  const extra: EvidenceItem[] = [];
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(caseDir, { withFileTypes: true });
+  } catch {
+    return extra;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const ext = path.extname(entry.name).toLowerCase();
+    if (ext === '.md') continue;
+
+    const filePath = path.join(caseDir, entry.name);
+    if (trackedPaths.has(filePath)) continue;
+
+    let stats: fs.Stats;
+    try { stats = fs.statSync(filePath); } catch { continue; }
+
+    extra.push({
+      id: `disk-${entry.name}`,
+      type: inferEvidenceType(entry.name),
+      source: entry.name,
+      capturedAt: stats.mtime,
+      filePath,
+    });
+  }
+
+  return extra;
+}
+
+function inferEvidenceType(filename: string): EvidenceItem['type'] {
+  const ext = path.extname(filename).toLowerCase();
+  if (ext === '.tdump') return 'thread-dump';
+  if (ext === '.log') return 'log-export';
+  if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif' || ext === '.webp') return 'screenshot';
+  return 'generic';
 }
 
 function buildCaseSummary(session: CaseSession): string {

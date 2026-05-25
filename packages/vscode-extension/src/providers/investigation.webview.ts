@@ -128,7 +128,7 @@ export class InvestigationWebview {
         if (!session) return;
         const ev = session.meta.evidence.find(e => e.id === String(msg.id));
         if (!ev) return;
-        const pane = Number(msg.pane) || 0;
+        const paneId = String(msg.paneId ?? '');
         const isImage = ev.type === 'screenshot' || /\.(png|jpg|jpeg|gif|webp)$/i.test(ev.filePath);
         const name = ev.filePath ? path.basename(ev.filePath) : ev.id;
         let content: string | null = null;
@@ -153,7 +153,7 @@ export class InvestigationWebview {
           }
           content = text ? text.slice(0, 200000) : null;
         }
-        panel.webview.postMessage({ type: 'evidenceView', id: ev.id, name, pane, content, contentType });
+        panel.webview.postMessage({ type: 'evidenceView', id: ev.id, name, paneId, content, contentType });
         break;
       }
 
@@ -286,18 +286,21 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .tl-bar{height:16px;background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:2px;position:relative;overflow:hidden}
 .tl-mark{position:absolute;width:2px;height:100%;background:var(--vscode-focusBorder);opacity:.7;cursor:pointer}
 .tl-mark:hover{opacity:1}
-.viewer-body{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.viewer-pane{display:flex;flex-direction:column;overflow:hidden;flex:1;min-height:60px}
+.viewer-body{flex:1;overflow-y:auto;overflow-x:hidden}
+.viewer-pane{display:flex;flex-direction:column;border-bottom:1px solid var(--vscode-panel-border)}
 .viewer-pane-hdr{display:flex;align-items:center;gap:5px;padding:3px 8px;font-size:10px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
-.viewer-pane.focused .viewer-pane-hdr{background:var(--vscode-list-hoverBackground)}
 .viewer-lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--vscode-descriptionForeground);font-style:italic;font-size:10px}
 .viewer-lbl.loaded{color:var(--vscode-foreground);font-style:normal}
-.viewer-content{flex:1;overflow:auto;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;padding:8px;line-height:1.5}
+.viewer-content{height:260px;overflow:auto;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;padding:8px;line-height:1.5}
 .viewer-content pre{white-space:pre-wrap;word-break:break-all;margin:0}
 .viewer-content img{max-width:100%;height:auto;display:block;margin:0 auto}
 .viewer-empty{text-align:center;padding:32px 12px;font-size:11px;color:var(--vscode-descriptionForeground);line-height:1.8}
-.viewer-split-hnd{height:4px;flex-shrink:0;cursor:row-resize;background:var(--vscode-panel-border);transition:background .12s;display:none}
-.viewer-split-hnd:hover,.viewer-split-hnd.active{background:var(--vscode-focusBorder)}
+.viewer-empty-state{display:flex;align-items:center;justify-content:center;flex:1;font-size:11px;color:var(--vscode-descriptionForeground);padding:40px 12px;text-align:center;line-height:1.8}
+.ctx-menu{display:none;position:fixed;background:var(--vscode-menu-background,#252526);border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:3px;z-index:9999;min-width:150px;overflow:hidden;box-shadow:2px 4px 12px rgba(0,0,0,.4)}
+.ctx-item{padding:6px 14px;font-size:12px;cursor:pointer;color:var(--vscode-menu-foreground,var(--vscode-foreground));user-select:none}
+.ctx-item:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
+.ctx-danger{color:var(--vscode-errorForeground)!important}
+.ctx-sep{height:1px;background:var(--vscode-menu-separatorBackground,var(--vscode-panel-border));margin:3px 0}
 </style>
 </head>
 <body>
@@ -316,7 +319,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
       <span>Evidence<span class="col-drag-hint">drag to reorder</span></span>
     </div>
     <div class="col-body">
-      <button class="add-btn" onclick="send('addEvidence')">＋ Add evidence files</button>
+      <button class="add-btn" onclick="send('addEvidence')">&#xff0b; Add evidence files</button>
       <div id="ev-list"></div>
       <div class="analysis-section" id="analysis-section">
         <div class="analysis-hdr" onclick="toggleAnalysis()">
@@ -334,31 +337,15 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
       <span>Notes<span class="col-drag-hint">drag to reorder</span></span>
       <span class="save-indicator" id="save-indicator">Saved</span>
     </div>
-    <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here…&#10;&#10;What did you observe? What have you tried? What's the current hypothesis?"></textarea>
+    <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here&#x2026;&#10;&#10;What did you observe? What have you tried? What&#x27;s the current hypothesis?"></textarea>
   </div>
   <div class="resize-handle" id="handle-1"></div>
   <div class="col viewer" id="col-viewer">
     <div class="col-header" draggable="true" data-col="viewer">
       <span>Viewer<span class="col-drag-hint">drag to reorder</span></span>
-      <button class="btn" id="split-btn" onclick="toggleSplit()" style="font-size:10px;padding:1px 6px;text-transform:none;letter-spacing:0;font-weight:400">Split</button>
     </div>
     <div class="viewer-body" id="viewer-body">
-      <div class="viewer-pane focused" id="viewer-pane-0" onclick="focusPane(0)">
-        <div class="viewer-pane-hdr">
-          <span class="viewer-lbl" id="viewer-lbl-0">Click evidence to view</span>
-          <button class="btn" id="viewer-ext-0" style="display:none;font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400" onclick="extOpen(event,0)" title="Open in editor">Open &#x2197;</button>
-        </div>
-        <div class="viewer-content" id="viewer-content-0"><div class="viewer-empty">Click an evidence item to view its content here</div></div>
-      </div>
-      <div class="viewer-split-hnd" id="viewer-split-hnd"></div>
-      <div class="viewer-pane" id="viewer-pane-1" style="display:none" onclick="focusPane(1)">
-        <div class="viewer-pane-hdr">
-          <span class="viewer-lbl" id="viewer-lbl-1">Click evidence to view</span>
-          <button class="btn" id="viewer-ext-1" style="display:none;font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400" onclick="extOpen(event,1)" title="Open in editor">Open &#x2197;</button>
-          <button class="btn" onclick="closeSplit(event)" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400" title="Close split">&#x2715;</button>
-        </div>
-        <div class="viewer-content" id="viewer-content-1"><div class="viewer-empty">Click an evidence item to view its content here</div></div>
-      </div>
+      <div class="viewer-empty-state" id="viewer-empty-state">Click an evidence item to open it here.<br>Each item opens in its own pane.</div>
     </div>
   </div>
 </div>
@@ -366,6 +353,13 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 <div class="timeline">
   <div class="tl-label">Timeline</div>
   <div class="tl-bar" id="tl-bar"></div>
+</div>
+
+<!-- Context menu for evidence items -->
+<div class="ctx-menu" id="ctx-menu">
+  <div class="ctx-item" id="ctx-open">Open in Editor &#x2197;</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item ctx-danger" id="ctx-delete">Delete Evidence</div>
 </div>
 
 <script>
@@ -499,27 +493,28 @@ loadLayout();
 // ── Messaging ─────────────────────────────────────────────────
 function send(type, extra) { vscode.postMessage(Object.assign({type}, extra||{})); }
 
-window.addEventListener('message', ({data:m}) => {
+window.addEventListener('message', function(evt) {
+  var m = evt.data;
   if (m.type === 'initialState') {
     m.evidence.forEach(addEvidence);
     renderFindings(m.findings);
-    const ta = document.getElementById('notes-area');
+    var ta = document.getElementById('notes-area');
     if (ta && m.notes) ta.value = m.notes;
   }
   else if (m.type === 'evidenceAdded') addEvidence(m.item);
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
   else if (m.type === 'findings') renderFindings(m.findings);
   else if (m.type === 'bridgeStatus') setBridge(m.connected);
-  else if (m.type === 'evidenceView') renderViewerContent(m.pane, m.id, m.name, m.content, m.contentType);
+  else if (m.type === 'evidenceView') renderViewerContent(m.paneId, m.id, m.name, m.content, m.contentType);
 });
 
-document.getElementById('notes-area').addEventListener('input', () => {
+document.getElementById('notes-area').addEventListener('input', function() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+  saveTimer = setTimeout(function() {
     send('saveNotes', { notes: document.getElementById('notes-area').value });
-    const ind = document.getElementById('save-indicator');
+    var ind = document.getElementById('save-indicator');
     ind.classList.add('show');
-    setTimeout(() => ind.classList.remove('show'), 1200);
+    setTimeout(function() { ind.classList.remove('show'); }, 1200);
   }, 500);
 });
 
@@ -528,12 +523,12 @@ function setBridge(on) {
   document.getElementById('bridge-lbl').textContent = on ? 'Bridge connected' : 'Disconnected';
 }
 
-const TYPE_SHORT = {'thread-dump':'TD','log-export':'LOG','top-output':'TOP','screenshot':'IMG','generic':'FILE'};
+var TYPE_SHORT = {'thread-dump':'TD','log-export':'LOG','top-output':'TOP','screenshot':'IMG','generic':'FILE'};
 
 function addEvidence(item) {
   items.push(item);
-  const t = new Date(item.timestamp);
-  const row = document.createElement('div');
+  var t = new Date(item.timestamp);
+  var row = document.createElement('div');
   row.className = 'ev-item';
   row.title = item.name;
   row.dataset.evId = item.id;
@@ -541,72 +536,86 @@ function addEvidence(item) {
     '<span class="ev-type">'+(TYPE_SHORT[item.type]||'FILE')+'</span>'+
     '<span class="ev-name">'+esc(item.name)+'</span>'+
     '<span class="ev-time">'+fmt(t)+'</span>'+
-    '<button class="ev-ext" title="Open in editor" onclick="openInEditor(event,\''+esc(item.id)+'\')">&#x2197;</button>'+
-    '<button class="ev-del" title="Remove" onclick="delEvidence(event,\''+esc(item.id)+'\')">&#x2715;</button>';
+    '<button class="ev-ext" title="Open in editor" onclick="openInEditor(event,\''+escAttr(item.id)+'\')">&#x2197;</button>'+
+    '<button class="ev-del" title="Remove" onclick="delEvidence(event,\''+escAttr(item.id)+'\')">&#x2715;</button>';
 
-  row.onclick = function(e) {
+  row.addEventListener('click', function(e) {
     if (e.target.classList.contains('ev-del') || e.target.classList.contains('ev-ext')) return;
-    loadInViewer(item.id, item.name, item.type);
-  };
+    openInViewer(item.id, item.name);
+  });
 
-  const wrapper = document.createElement('div');
+  var wrapper = document.createElement('div');
   wrapper.dataset.evId = item.id;
   wrapper.appendChild(row);
   document.getElementById('ev-list').appendChild(wrapper);
   updateTimeline();
 }
 
-// ── Viewer ────────────────────────────────────────────────────
-let viewerIds = [null, null];
-let activePane = 0;
-let splitOpen = false;
+// ── Multi-pane Viewer ─────────────────────────────────────────
+var viewerPanes = []; // [{ paneId, evId, el }]
 
-function focusPane(idx) {
-  activePane = idx;
-  for (let i = 0; i < 2; i++) {
-    document.getElementById('viewer-pane-'+i).classList.toggle('focused', i === idx);
+function openInViewer(evId, name) {
+  // If already open in a pane, scroll to it
+  var existing = viewerPanes.find(function(p) { return p.evId === evId; });
+  if (existing) {
+    existing.el.scrollIntoView({ behavior: 'smooth' });
+    markActiveEv(evId);
+    return;
+  }
+
+  var paneId = 'vp-' + Date.now();
+  var el = document.createElement('div');
+  el.className = 'viewer-pane';
+  el.dataset.paneId = paneId;
+  el.dataset.evId = evId;
+  el.innerHTML =
+    '<div class="viewer-pane-hdr">'+
+      '<span class="viewer-lbl loaded" id="lbl-'+paneId+'">'+esc(name)+'</span>'+
+      '<button class="btn" onclick="extOpenPane(\''+paneId+'\')" title="Open in editor" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">Open &#x2197;</button>'+
+      '<button class="btn" onclick="closePane(event,\''+paneId+'\')" title="Close pane" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">&#x2715;</button>'+
+    '</div>'+
+    '<div class="viewer-content" id="vcontent-'+paneId+'"><div class="viewer-empty">Loading…</div></div>';
+
+  var body = document.getElementById('viewer-body');
+  document.getElementById('viewer-empty-state').style.display = 'none';
+  body.appendChild(el);
+  viewerPanes.push({ paneId: paneId, evId: evId, el: el });
+
+  send('viewEvidence', { id: evId, paneId: paneId });
+  markActiveEv(evId);
+}
+
+function closePane(e, paneId) {
+  if (e) e.stopPropagation();
+  var idx = viewerPanes.findIndex(function(p) { return p.paneId === paneId; });
+  if (idx === -1) return;
+  var evId = viewerPanes[idx].evId;
+  viewerPanes[idx].el.remove();
+  viewerPanes.splice(idx, 1);
+  if (viewerPanes.length === 0) {
+    document.getElementById('viewer-empty-state').style.display = '';
+  }
+  // Remove active class if no remaining pane shows this evidence
+  if (!viewerPanes.find(function(p) { return p.evId === evId; })) {
+    var row = document.querySelector('.ev-item[data-ev-id="'+evId+'"]');
+    if (row) row.classList.remove('active');
   }
 }
 
-function toggleSplit() {
-  if (splitOpen) { closeSplit(); return; }
-  splitOpen = true;
-  document.getElementById('viewer-pane-1').style.display = 'flex';
-  document.getElementById('viewer-split-hnd').style.display = 'block';
-  document.getElementById('split-btn').textContent = 'Unsplit';
-  focusPane(1);
+function extOpenPane(paneId) {
+  var pane = viewerPanes.find(function(p) { return p.paneId === paneId; });
+  if (pane) send('openEvidence', { id: pane.evId });
 }
 
-function closeSplit(e) {
-  if (e) e.stopPropagation();
-  splitOpen = false;
-  document.getElementById('viewer-pane-1').style.display = 'none';
-  document.getElementById('viewer-split-hnd').style.display = 'none';
-  document.getElementById('split-btn').textContent = 'Split';
-  viewerIds[1] = null;
-  focusPane(0);
+function markActiveEv(evId) {
+  document.querySelectorAll('.ev-item').forEach(function(el) {
+    el.classList.toggle('active', el.dataset.evId === evId);
+  });
 }
 
-function loadInViewer(id, name, type) {
-  const pane = splitOpen ? activePane : 0;
-  send('viewEvidence', { id: id, pane: pane });
-  const lbl = document.getElementById('viewer-lbl-'+pane);
-  lbl.textContent = 'Loading…';
-  lbl.className = 'viewer-lbl';
-  document.getElementById('viewer-content-'+pane).innerHTML = '<div class="viewer-empty">Loading…</div>';
-  document.querySelectorAll('.ev-item.active').forEach(function(el) { el.classList.remove('active'); });
-  const row = document.querySelector('[data-ev-id="'+id+'"] .ev-item');
-  if (row) row.classList.add('active');
-}
-
-function renderViewerContent(pane, id, name, content, contentType) {
-  viewerIds[pane] = id;
-  const lbl = document.getElementById('viewer-lbl-'+pane);
-  lbl.textContent = name;
-  lbl.className = 'viewer-lbl loaded';
-  const extBtn = document.getElementById('viewer-ext-'+pane);
-  if (extBtn) extBtn.style.display = '';
-  const contentEl = document.getElementById('viewer-content-'+pane);
+function renderViewerContent(paneId, evId, name, content, contentType) {
+  var contentEl = document.getElementById('vcontent-' + paneId);
+  if (!contentEl) return;
   if (!content) {
     contentEl.innerHTML = '<div class="viewer-empty">No content available for this file.</div>';
     return;
@@ -616,61 +625,16 @@ function renderViewerContent(pane, id, name, content, contentType) {
   } else {
     contentEl.innerHTML = '<pre>'+esc(content)+'</pre>';
   }
-  if (pane === 0 && splitOpen) focusPane(1);
 }
-
-function extOpen(e, pane) {
-  e.stopPropagation();
-  if (viewerIds[pane]) send('openEvidence', { id: viewerIds[pane] });
-}
-
-// ── Viewer split handle drag ──────────────────────────────────
-(function() {
-  const hnd = document.getElementById('viewer-split-hnd');
-  hnd.addEventListener('mousedown', function(e) {
-    e.preventDefault();
-    hnd.classList.add('active');
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    const p0 = document.getElementById('viewer-pane-0');
-    const p1 = document.getElementById('viewer-pane-1');
-    let h0 = p0.getBoundingClientRect().height;
-    let h1 = p1.getBoundingClientRect().height;
-    p0.style.flex = 'none'; p0.style.height = h0 + 'px';
-    p1.style.flex = 'none'; p1.style.height = h1 + 'px';
-    const startY = e.clientY;
-    function onMove(ev) {
-      const dy = ev.clientY - startY;
-      p0.style.height = Math.max(60, h0 + dy) + 'px';
-      p1.style.height = Math.max(60, h1 - dy) + 'px';
-    }
-    function onUp() {
-      hnd.classList.remove('active');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
-})();
 
 function removeEvidence(id) {
   items = items.filter(function(i) { return i.id !== id; });
-  const wrapper = document.querySelector('[data-ev-id="'+id+'"]');
+  var wrapper = document.querySelector('[data-ev-id="'+id+'"]');
   if (wrapper) wrapper.remove();
-  for (let i = 0; i < 2; i++) {
-    if (viewerIds[i] === id) {
-      viewerIds[i] = null;
-      const lbl = document.getElementById('viewer-lbl-'+i);
-      lbl.textContent = 'Click evidence to view';
-      lbl.className = 'viewer-lbl';
-      const extBtn = document.getElementById('viewer-ext-'+i);
-      if (extBtn) extBtn.style.display = 'none';
-      document.getElementById('viewer-content-'+i).innerHTML = '<div class="viewer-empty">Click an evidence item to view its content here</div>';
-    }
-  }
+  // Close any viewer panes showing this evidence
+  viewerPanes.filter(function(p) { return p.evId === id; })
+    .map(function(p) { return p.paneId; })
+    .forEach(function(pid) { closePane(null, pid); });
   updateTimeline();
 }
 
@@ -684,8 +648,43 @@ function openInEditor(e, id) {
   send('openEvidence', { id: id });
 }
 
+// ── Context menu ──────────────────────────────────────────────
+var ctxEvId = null;
+var ctxMenu = document.getElementById('ctx-menu');
+
+document.addEventListener('contextmenu', function(e) {
+  var evItem = e.target.closest('.ev-item');
+  if (!evItem) { hideCtxMenu(); return; }
+  e.preventDefault();
+  ctxEvId = evItem.dataset.evId;
+  // Keep menu inside viewport
+  var menuW = 160, menuH = 80;
+  var x = Math.min(e.clientX, window.innerWidth - menuW - 4);
+  var y = Math.min(e.clientY, window.innerHeight - menuH - 4);
+  ctxMenu.style.left = x + 'px';
+  ctxMenu.style.top = y + 'px';
+  ctxMenu.style.display = 'block';
+});
+
+document.addEventListener('click', function() { hideCtxMenu(); });
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') hideCtxMenu(); });
+
+function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxEvId = null; }
+
+document.getElementById('ctx-open').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (ctxEvId) send('openEvidence', { id: ctxEvId });
+  hideCtxMenu();
+});
+
+document.getElementById('ctx-delete').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (ctxEvId) send('deleteEvidence', { id: ctxEvId });
+  hideCtxMenu();
+});
+
 // ── Analysis section ──────────────────────────────────────────
-let analysisOpen = false;
+var analysisOpen = false;
 
 function toggleAnalysis() {
   analysisOpen = !analysisOpen;
@@ -694,8 +693,8 @@ function toggleAnalysis() {
 }
 
 function renderFindings(findings) {
-  const section = document.getElementById('analysis-section');
-  const body = document.getElementById('analysis-body');
+  var section = document.getElementById('analysis-section');
+  var body = document.getElementById('analysis-body');
   if (!findings || !findings.length) {
     section.style.display = 'none';
     body.innerHTML = '';
@@ -708,11 +707,11 @@ function renderFindings(findings) {
 }
 
 function cardHtml(f) {
-  const evHtml = f.evidence.map(e=>'<div>'+esc(e)+'</div>').join('');
-  const stepsHtml = f.nextSteps.map(s=>'<button class="btn" onclick="noop()">'+esc(s)+'</button>').join('');
-  const relHtml = f.relatedSignatures&&f.relatedSignatures.length
+  var evHtml = f.evidence.map(function(e){return '<div>'+esc(e)+'</div>';}).join('');
+  var stepsHtml = f.nextSteps.map(function(s){return '<button class="btn" onclick="noop()">'+esc(s)+'</button>';}).join('');
+  var relHtml = f.relatedSignatures&&f.relatedSignatures.length
     ? '<div class="related">Related: '+f.relatedSignatures.map(esc).join(', ')+'</div>' : '';
-  const fj = esc(JSON.stringify(f));
+  var fj = esc(JSON.stringify(f));
   return '<div class="card">'+
     '<div class="card-header" onclick="toggle(this.parentElement)">'+
       '<span class="badge '+f.confidence+'">'+f.confidence.toUpperCase()+'</span>'+
@@ -733,16 +732,17 @@ function toggle(card) { card.classList.toggle('open'); }
 
 function updateTimeline() {
   if(!items.length) return;
-  const ts = items.map(e=>new Date(e.timestamp).getTime());
-  const lo=Math.min(...ts), hi=Math.max(...ts), span=hi-lo||1;
-  document.getElementById('tl-bar').innerHTML = items.map(e=>{
-    const pct = ((new Date(e.timestamp).getTime()-lo)/span*92+4).toFixed(1);
+  var ts = items.map(function(e){return new Date(e.timestamp).getTime();});
+  var lo=Math.min.apply(null,ts), hi=Math.max.apply(null,ts), span=hi-lo||1;
+  document.getElementById('tl-bar').innerHTML = items.map(function(e){
+    var pct = ((new Date(e.timestamp).getTime()-lo)/span*92+4).toFixed(1);
     return '<div class="tl-mark" style="left:'+pct+'%" title="'+esc(e.name)+' '+fmt(new Date(e.timestamp))+'"></div>';
   }).join('');
 }
 
 function fmt(d){return String(d.getHours()).padStart(2,'0')+'h'+String(d.getMinutes()).padStart(2,'0');}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function escAttr(s){return String(s).replace(/'/g,'&#39;').replace(/"/g,'&quot;');}
 function noop(){}
 
 send('ready');

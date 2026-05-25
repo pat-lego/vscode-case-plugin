@@ -57,6 +57,14 @@
         "title": "Open Investigation"
       },
       {
+        "command": "investigator.deleteCase",
+        "title": "Delete Case"
+      },
+      {
+        "command": "investigator.openCaseInFinder",
+        "title": "Open in Finder"
+      },
+      {
         "command": "investigator.reloadSignatures",
         "title": "Reload Signatures",
         "icon": "$(refresh)"
@@ -73,6 +81,18 @@
           "command": "investigator.reloadSignatures",
           "when": "view == investigator.signatures",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "investigator.openCaseInFinder",
+          "when": "view == investigator.cases && viewItem == case",
+          "group": "navigation@1"
+        },
+        {
+          "command": "investigator.deleteCase",
+          "when": "view == investigator.cases && viewItem == case",
+          "group": "9_cutcopypaste@1"
         }
       ]
     },
