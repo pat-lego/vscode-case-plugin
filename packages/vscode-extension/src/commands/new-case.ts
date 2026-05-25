@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
+import { CaseManager } from '../services/case-manager';
 import { InvestigationWebview } from '../providers/investigation.webview';
-import { SidebarProvider, CaseItem } from '../providers/sidebar.provider';
 
 export async function newCase(
   context: vscode.ExtensionContext,
+  caseManager: CaseManager,
   webview: InvestigationWebview
 ): Promise<void> {
   const config = vscode.workspace.getConfiguration('investigator');
@@ -13,22 +14,10 @@ export async function newCase(
     prompt: 'Investigation title',
     placeHolder: 'e.g. API degradation on search endpoint'
   });
-
   if (!title) return;
 
   const caseId = generateCaseId(initials);
-
-  context.globalState.update(`investigator.case.${caseId}`, {
-    id: caseId,
-    title,
-    createdAt: new Date().toISOString(),
-    status: 'open',
-    evidence: []
-  });
-
-  const sidebar = new SidebarProvider(context);
-  sidebar.addCase(new CaseItem(caseId, `${caseId} — ${title}`, 'open'));
-
+  caseManager.createCase(caseId, title);
   webview.openCase(caseId);
 }
 

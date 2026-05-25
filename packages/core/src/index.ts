@@ -5,3 +5,4 @@ export * from './types/finding';
 export * from './parsers/thread-dump/index';
 export * from './engine/signal-extractor';
 export * from './engine/signature-matcher';
+export * from './signatures/loader';

@@ -1,21 +1,16 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
+import { CaseManager } from '../services/case-manager';
+import { ExportService } from '../services/export-service';
 
-export async function exportCase(context: vscode.ExtensionContext): Promise<void> {
-  const config = vscode.workspace.getConfiguration('investigator');
-  const vaultPath = config.get<string>('obsidianVaultPath');
-
-  if (!vaultPath) {
-    const action = await vscode.window.showErrorMessage(
-      'Obsidian vault path not configured.',
-      'Open Settings'
-    );
-    if (action === 'Open Settings') {
-      vscode.commands.executeCommand('workbench.action.openSettings', 'investigator.obsidianVaultPath');
-    }
+export async function exportCase(
+  caseManager: CaseManager,
+  exportService: ExportService
+): Promise<void> {
+  const session = caseManager.getActiveSession();
+  if (!session) {
+    vscode.window.showWarningMessage('No active investigation to export.');
     return;
   }
-
-  vscode.window.showInformationMessage('Export to Obsidian — coming in Phase 2');
+  const mdPath = await exportService.exportCase(session);
+  if (mdPath) vscode.window.showInformationMessage(`Case exported: ${mdPath}`);
 }

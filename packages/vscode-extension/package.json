@@ -48,6 +48,11 @@
       {
         "command": "investigator.openCase",
         "title": "Open Investigation"
+      },
+      {
+        "command": "investigator.reloadSignatures",
+        "title": "Reload Signatures",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -55,6 +60,11 @@
         {
           "command": "investigator.newCase",
           "when": "view == investigator.cases",
+          "group": "navigation"
+        },
+        {
+          "command": "investigator.reloadSignatures",
+          "when": "view == investigator.signatures",
           "group": "navigation"
         }
       ]
@@ -83,6 +93,10 @@
           "type": "number",
           "default": 7734,
           "description": "WebSocket port for browser extension bridge"
+        },
+        "investigator.claudeApiKey": {
+          "type": "string",
+          "description": "Anthropic API key for Claude case review (optional)"
         }
       }
     }
