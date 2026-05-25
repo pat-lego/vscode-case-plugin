@@ -139,6 +139,19 @@ export class CaseManager {
     return true;
   }
 
+  /**
+   * Scans the case directory for non-MD files not yet tracked and appends
+   * them to the session's evidence list. Safe to call repeatedly.
+   */
+  refreshDiskEvidence(caseId: string): void {
+    const session = this.sessions.get(caseId);
+    if (!session || !session.casePath) return;
+    const caseDir = path.join(session.casePath, caseId);
+    if (!fs.existsSync(caseDir)) return;
+    const extra = scanDirForEvidence(caseDir, session.meta.evidence);
+    if (extra.length > 0) session.meta.evidence.push(...extra);
+  }
+
   /** Returns the on-disk directory for a case, or undefined if not disk-backed. */
   getCaseDir(caseId: string): string | undefined {
     const session = this.sessions.get(caseId);
@@ -240,11 +253,12 @@ export class CaseManager {
       const rawEvidence = Array.isArray(fm.evidence) ? fm.evidence as Record<string, unknown>[] : [];
 
       const evidence: EvidenceItem[] = rawEvidence.map(raw => {
+        const capturedAtRaw = new Date(raw['captured_at'] as string);
         const item: EvidenceItem = {
           id: String(raw['id'] ?? ''),
           type: raw['type'] as EvidenceItem['type'],
           source: String(raw['source'] ?? ''),
-          capturedAt: new Date(raw['captured_at'] as string),
+          capturedAt: isNaN(capturedAtRaw.getTime()) ? new Date() : capturedAtRaw,
           filePath: String(raw['file_path'] ?? ''),
         };
         if (raw['stored_file']) {

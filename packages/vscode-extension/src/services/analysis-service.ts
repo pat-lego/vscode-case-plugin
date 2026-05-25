@@ -90,7 +90,7 @@ export class AnalysisService {
       source: filePath ? 'local-file' : 'bridge-capture',
       capturedAt,
       filePath,
-      rawContent: type !== 'screenshot' ? content : undefined
+      rawContent: content || undefined
     };
 
     this.caseManager.addEvidence(caseId, evidenceItem, signals);

@@ -3,6 +3,9 @@ import { getState, setState, InboundMessage, OutboundMessage } from '../bridge/w
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Clear stale state on service worker restart
+setState({ connected: false, activeCase: null });
+
 async function connect() {
   const state = await getState();
   const url = `ws://127.0.0.1:${state.port}`;
@@ -52,7 +55,7 @@ function scheduleReconnect() {
 function startPing() {
   setInterval(() => {
     send({ type: 'ping' });
-  }, 25000);
+  }, 20000);
 }
 
 function send(msg: OutboundMessage): boolean {
@@ -66,7 +69,7 @@ function notifyPopup(msg: object) {
 }
 
 // Keep service worker alive while connected
-chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 });
+chrome.alarms.create('keepAlive', { periodInMinutes: 1/3 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'keepAlive') connect();
 });
@@ -108,6 +111,50 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
       const tab = tabs[0];
       if (!tab?.id) { sendResponse({ ok: false, error: 'No active tab' }); return; }
       chrome.tabs.sendMessage(tab.id, { type: 'triggerCapture' }, (result) => {
+        sendResponse(result ?? { ok: false, error: 'No response from content script' });
+      });
+    });
+    return true;
+  }
+
+  if (msg.type === 'captureScreenshot') {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (!tab?.id || !tab.windowId) { sendResponse({ ok: false, error: 'No active tab' }); return; }
+      chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' }, (dataUrl) => {
+        if (chrome.runtime.lastError || !dataUrl) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError?.message ?? 'Screenshot failed' });
+          return;
+        }
+        const now = new Date();
+        const hhmm = String(now.getHours()).padStart(2, '0') + 'h' + String(now.getMinutes()).padStart(2, '0');
+        const payload: OutboundMessage = {
+          type: 'screenshot',
+          source: tab.url ?? '',
+          name: `screenshot-${hhmm}.png`,
+          data: dataUrl,
+          timestamp: now.toISOString()
+        };
+        const sent = send(payload);
+        if (sent) {
+          getState().then(state => {
+            setState({ captureCount: state.captureCount + 1 });
+            notifyPopup({ type: 'stateChanged' });
+          });
+          sendResponse({ ok: true });
+        } else {
+          sendResponse({ ok: false, error: 'Not connected to VS Code' });
+        }
+      });
+    });
+    return true;
+  }
+
+  if (msg.type === 'captureSelection') {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (!tab?.id) { sendResponse({ ok: false, error: 'No active tab' }); return; }
+      chrome.tabs.sendMessage(tab.id, { type: 'triggerSelectionCapture' }, (result) => {
         sendResponse(result ?? { ok: false, error: 'No response from content script' });
       });
     });

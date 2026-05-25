@@ -77,6 +77,29 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
     capture().then(ok => sendResponse({ ok }));
     return true;
   }
+
+  if (msg.type === 'triggerSelectionCapture') {
+    const selection = window.getSelection()?.toString().trim() ?? '';
+    if (selection.length < 10) {
+      sendResponse({ ok: false, error: 'Nothing selected' });
+      return true;
+    }
+    const hostname = location.hostname;
+    const now = new Date();
+    const hhmm = String(now.getHours()).padStart(2, '0') + 'h' + String(now.getMinutes()).padStart(2, '0');
+    const header = `Source: ${location.href}\nCaptured: ${now.toISOString()}\n\n`;
+    const payload = {
+      type: 'capture' as const,
+      source: hostname,
+      name: `${hostname}-selection-${hhmm}.txt`,
+      content: header + selection,
+      timestamp: now.toISOString()
+    };
+    chrome.runtime.sendMessage({ type: 'sendCapture', payload }, (res: { ok: boolean; error?: string }) => {
+      sendResponse(res ?? { ok: false, error: 'No response' });
+    });
+    return true;
+  }
 });
 
 function showToast(message: string) {

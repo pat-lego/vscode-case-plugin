@@ -9,8 +9,10 @@ function render(state: BridgeState) {
   $('dot').className = 'dot' + (connected ? ' on' : '');
   $('status-label').textContent = connected ? 'Connected' : 'Disconnected';
 
-  const captureBtn = $('capture-btn') as HTMLButtonElement;
-  captureBtn.disabled = !connected || !state.activeCase;
+  const disabled = !connected || !state.activeCase;
+  ($('capture-page-btn') as HTMLButtonElement).disabled = disabled;
+  ($('capture-sel-btn') as HTMLButtonElement).disabled = disabled;
+  ($('capture-shot-btn') as HTMLButtonElement).disabled = disabled;
 
   if (state.activeCase) {
     $('no-case').style.display = 'none';
@@ -33,8 +35,7 @@ function feedback(msg: string, error = false) {
   setTimeout(() => { el.textContent = ''; }, 2500);
 }
 
-// Attach to window for inline HTML onclick handlers
-(window as unknown as Record<string, unknown>)['captureTab'] = function () {
+function capturePageFull() {
   chrome.runtime.sendMessage({ type: 'captureTab' }, (res: { ok: boolean; error?: string }) => {
     if (res?.ok) {
       feedback('Captured ✓');
@@ -42,7 +43,27 @@ function feedback(msg: string, error = false) {
       feedback(res?.error ?? 'Capture failed', true);
     }
   });
-};
+}
+
+function captureSelectionOnly() {
+  chrome.runtime.sendMessage({ type: 'captureSelection' }, (res: { ok: boolean; error?: string }) => {
+    if (res?.ok) {
+      feedback('Selection captured ✓');
+    } else {
+      feedback(res?.error ?? 'Selection capture failed', true);
+    }
+  });
+}
+
+function captureScreenshot() {
+  chrome.runtime.sendMessage({ type: 'captureScreenshot' }, (res: { ok: boolean; error?: string }) => {
+    if (res?.ok) {
+      feedback('Screenshot captured ✓');
+    } else {
+      feedback(res?.error ?? 'Screenshot failed', true);
+    }
+  });
+}
 
 (window as unknown as Record<string, unknown>)['updatePort'] = function () {
   const val = parseInt(($('port-input') as HTMLInputElement).value);
@@ -51,6 +72,13 @@ function feedback(msg: string, error = false) {
     feedback(`Port set to ${val}`);
   });
 };
+
+// Wire up capture buttons
+document.addEventListener('DOMContentLoaded', () => {
+  $('capture-page-btn').addEventListener('click', capturePageFull);
+  $('capture-sel-btn').addEventListener('click', captureSelectionOnly);
+  $('capture-shot-btn').addEventListener('click', captureScreenshot);
+});
 
 // Listen for state changes pushed from background
 chrome.runtime.onMessage.addListener((msg: Record<string, unknown>) => {

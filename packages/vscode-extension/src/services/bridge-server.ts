@@ -14,7 +14,7 @@ export interface BridgeCapture {
   mimeType?: string;
 }
 
-export class BridgeServer {
+export class BridgeServer implements vscode.Disposable {
   private httpServer: http.Server | undefined;
   private server: WebSocketServer | undefined;
   private clients = new Set<WebSocket.WebSocket>();
@@ -32,8 +32,12 @@ export class BridgeServer {
     this.caseManager.onActiveChange(() => this.broadcastActiveCase());
   }
 
+  dispose() {
+    this.stop();
+  }
+
   start(port: number) {
-    if (this.server) return;
+    if (this.server || this.httpServer) return;
 
     // HTTP server handles Chrome's Private Network Access preflight (OPTIONS) as
     // well as any plain HTTP probes from the browser extension.
@@ -52,8 +56,15 @@ export class BridgeServer {
       this.server = new WebSocketServer({ server: this.httpServer });
     } catch {
       vscode.window.showWarningMessage(`Investigation Bridge: could not create WebSocket server on port ${port}.`);
+      this.httpServer.close();
+      this.httpServer = undefined;
       return;
     }
+
+    this.server.on('headers', (headers: string[]) => {
+      headers.push('Access-Control-Allow-Private-Network: true');
+      headers.push('Access-Control-Allow-Origin: *');
+    });
 
     this.server.on('connection', (ws) => {
       this.clients.add(ws);

@@ -28,7 +28,8 @@ export function activate(context: vscode.ExtensionContext) {
     context, caseManager, analysisService, exportService, bridgeServer
   );
 
-  // Start bridge server
+  // Start bridge server (registered so it's stopped on extension deactivation)
+  context.subscriptions.push(bridgeServer);
   const cfg = vscode.workspace.getConfiguration('investigator');
   bridgeServer.start(cfg.get<number>('bridgePort') ?? 7734);
 

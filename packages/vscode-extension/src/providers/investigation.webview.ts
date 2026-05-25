@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { CaseManager } from '../services/case-manager';
 import { AnalysisService } from '../services/analysis-service';
 import { ExportService } from '../services/export-service';
@@ -73,6 +74,7 @@ export class InvestigationWebview {
 
     switch (String(msg.type)) {
       case 'ready': {
+        this.caseManager.refreshDiskEvidence(caseId);
         const session = this.caseManager.getSession(caseId);
         if (!session) return;
         panel.webview.postMessage({ type: 'bridgeStatus', connected: this.bridgeServer.isConnected() });
@@ -82,7 +84,9 @@ export class InvestigationWebview {
             id: e.id,
             name: e.filePath ? path.basename(e.filePath) : e.id,
             type: e.type,
-            timestamp: e.capturedAt.toISOString()
+            timestamp: e.capturedAt instanceof Date && !isNaN(e.capturedAt.getTime())
+              ? e.capturedAt.toISOString()
+              : new Date().toISOString()
           })),
           findings: session.findings,
           notes: session.meta.notes ?? ''
@@ -209,11 +213,13 @@ export class InvestigationWebview {
   }
 
   private buildHtml(caseId: string, title: string): string {
+    const nonce = crypto.randomBytes(16).toString('hex');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'nonce-${nonce}';">
 <title>${caseId}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -308,8 +314,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
   <h2>${caseId} — ${title}</h2>
   <div class="header-right">
     <div class="bridge"><div class="dot" id="dot"></div><span id="bridge-lbl">Disconnected</span></div>
-    <button class="btn" onclick="send('resolveCase')">Resolve</button>
-    <button class="btn primary" onclick="send('exportCase')">Export</button>
+    <button class="btn" id="resolve-btn">Resolve</button>
+    <button class="btn primary" id="export-btn">Export</button>
   </div>
 </div>
 
@@ -319,10 +325,10 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
       <span>Evidence<span class="col-drag-hint">drag to reorder</span></span>
     </div>
     <div class="col-body">
-      <button class="add-btn" onclick="send('addEvidence')">&#xff0b; Add evidence files</button>
+      <button class="add-btn" id="add-evidence-btn">&#xff0b; Add evidence files</button>
       <div id="ev-list"></div>
       <div class="analysis-section" id="analysis-section">
-        <div class="analysis-hdr" onclick="toggleAnalysis()">
+        <div class="analysis-hdr" id="analysis-toggle">
           Analysis
           <span class="analysis-cnt" id="analysis-cnt">0</span>
           <span class="chevron" id="analysis-chevron" style="margin-left:auto">&#x203A;</span>
@@ -362,7 +368,15 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
   <div class="ctx-item ctx-danger" id="ctx-delete">Delete Evidence</div>
 </div>
 
-<script>
+<script nonce="${nonce}">
+// Show any JS error visibly so it can be diagnosed
+window.onerror = function(msg, src, line) {
+  var banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#f14c4c;color:#fff;padding:6px 10px;font-size:11px;z-index:99999;font-family:monospace;white-space:pre-wrap';
+  banner.textContent = 'JS Error (line ' + line + '): ' + msg;
+  document.body.appendChild(banner);
+};
+
 const vscode = acquireVsCodeApi();
 let items = [];
 let saveTimer = null;
@@ -375,10 +389,13 @@ const handles = [document.getElementById('handle-0'), document.getElementById('h
 function getCol(id) { return document.getElementById('col-' + id); }
 
 function applyOrder() {
-  const ws = document.getElementById('workspace');
+  var ws = document.getElementById('workspace');
+  if (!ws) return;
   colOrder.forEach(function(id, i) {
-    ws.appendChild(getCol(id));
-    if (i < colOrder.length - 1) ws.appendChild(handles[i]);
+    var col = getCol(id);
+    if (col) ws.appendChild(col);
+    var h = handles[i];
+    if (i < colOrder.length - 1 && h) ws.appendChild(h);
   });
 }
 
@@ -406,6 +423,7 @@ function loadLayout() {
 
 // ── Resize handles ────────────────────────────────────────────
 handles.forEach(function(handle) {
+  if (!handle) return;
   handle.addEventListener('mousedown', function(e) {
     e.preventDefault();
     handle.classList.add('active');
@@ -488,7 +506,7 @@ document.querySelectorAll('.col-header[draggable]').forEach(function(header) {
   });
 });
 
-loadLayout();
+try { loadLayout(); } catch(e) { /* stale state — ignore, use defaults */ }
 
 // ── Messaging ─────────────────────────────────────────────────
 function send(type, extra) { vscode.postMessage(Object.assign({type}, extra||{})); }
@@ -536,8 +554,17 @@ function addEvidence(item) {
     '<span class="ev-type">'+(TYPE_SHORT[item.type]||'FILE')+'</span>'+
     '<span class="ev-name">'+esc(item.name)+'</span>'+
     '<span class="ev-time">'+fmt(t)+'</span>'+
-    '<button class="ev-ext" title="Open in editor" onclick="openInEditor(event,\''+escAttr(item.id)+'\')">&#x2197;</button>'+
-    '<button class="ev-del" title="Remove" onclick="delEvidence(event,\''+escAttr(item.id)+'\')">&#x2715;</button>';
+    '<button class="ev-ext" title="Open in editor">&#x2197;</button>'+
+    '<button class="ev-del" title="Remove">&#x2715;</button>';
+
+  row.querySelector('.ev-ext').addEventListener('click', function(e) {
+    e.stopPropagation();
+    send('openEvidence', { id: item.id });
+  });
+  row.querySelector('.ev-del').addEventListener('click', function(e) {
+    e.stopPropagation();
+    send('deleteEvidence', { id: item.id });
+  });
 
   row.addEventListener('click', function(e) {
     if (e.target.classList.contains('ev-del') || e.target.classList.contains('ev-ext')) return;
@@ -571,10 +598,17 @@ function openInViewer(evId, name) {
   el.innerHTML =
     '<div class="viewer-pane-hdr">'+
       '<span class="viewer-lbl loaded" id="lbl-'+paneId+'">'+esc(name)+'</span>'+
-      '<button class="btn" onclick="extOpenPane(\''+paneId+'\')" title="Open in editor" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">Open &#x2197;</button>'+
-      '<button class="btn" onclick="closePane(event,\''+paneId+'\')" title="Close pane" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">&#x2715;</button>'+
+      '<button class="btn pane-open-btn" title="Open in editor" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">Open &#x2197;</button>'+
+      '<button class="btn pane-close-btn" title="Close pane" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">&#x2715;</button>'+
     '</div>'+
     '<div class="viewer-content" id="vcontent-'+paneId+'"><div class="viewer-empty">Loading…</div></div>';
+
+  el.querySelector('.pane-open-btn').addEventListener('click', function() {
+    extOpenPane(paneId);
+  });
+  el.querySelector('.pane-close-btn').addEventListener('click', function(e) {
+    closePane(e, paneId);
+  });
 
   var body = document.getElementById('viewer-body');
   document.getElementById('viewer-empty-state').style.display = 'none';
@@ -708,12 +742,12 @@ function renderFindings(findings) {
 
 function cardHtml(f) {
   var evHtml = f.evidence.map(function(e){return '<div>'+esc(e)+'</div>';}).join('');
-  var stepsHtml = f.nextSteps.map(function(s){return '<button class="btn" onclick="noop()">'+esc(s)+'</button>';}).join('');
+  var stepsHtml = f.nextSteps.map(function(s){return '<button class="btn">'+esc(s)+'</button>';}).join('');
   var relHtml = f.relatedSignatures&&f.relatedSignatures.length
     ? '<div class="related">Related: '+f.relatedSignatures.map(esc).join(', ')+'</div>' : '';
-  var fj = esc(JSON.stringify(f));
+  var fj = escAttr(JSON.stringify(f));
   return '<div class="card">'+
-    '<div class="card-header" onclick="toggle(this.parentElement)">'+
+    '<div class="card-header" data-action="toggle-card">'+
       '<span class="badge '+f.confidence+'">'+f.confidence.toUpperCase()+'</span>'+
       '<span class="card-name">'+esc(f.signatureName)+'</span>'+
       '<span class="chevron">&#x203A;</span>'+
@@ -721,8 +755,8 @@ function cardHtml(f) {
     '<div class="card-body">'+
       '<div class="ev-lines">'+evHtml+'</div>'+
       '<div class="actions">'+stepsHtml+
-        '<button class="btn accent" onclick="send(\\u0027openSignatureBuilder\\u0027,{finding:'+fj+'})">Save as Signature</button>'+
-        '<button class="btn" onclick=\'send("askClaude",{signatureId:"'+esc(f.signatureId)+'"})\'> Ask Claude</button>'+
+        '<button class="btn accent" data-action="openSignatureBuilder" data-finding="'+fj+'">Save as Signature</button>'+
+        '<button class="btn" data-action="askClaude" data-sig-id="'+escAttr(f.signatureId)+'"> Ask Claude</button>'+
       '</div>'+relHtml+
     '</div>'+
   '</div>';
@@ -744,6 +778,32 @@ function fmt(d){return String(d.getHours()).padStart(2,'0')+'h'+String(d.getMinu
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function escAttr(s){return String(s).replace(/'/g,'&#39;').replace(/"/g,'&quot;');}
 function noop(){}
+
+// Event delegation for dynamically-generated card actions in analysis body
+document.getElementById('analysis-body').addEventListener('click', function(e) {
+  var target = e.target;
+  var action = target.dataset && target.dataset.action;
+  if (!action) {
+    // Walk up in case click landed on a child element
+    var el = target.closest('[data-action]');
+    if (el) { action = el.dataset.action; target = el; }
+  }
+  if (!action) return;
+  if (action === 'toggle-card') {
+    var card = target.closest('.card');
+    if (card) card.classList.toggle('open');
+  } else if (action === 'openSignatureBuilder') {
+    try { send('openSignatureBuilder', { finding: JSON.parse(target.dataset.finding) }); } catch(err) {}
+  } else if (action === 'askClaude') {
+    send('askClaude', { signatureId: target.dataset.sigId });
+  }
+});
+
+// Wire up static buttons via addEventListener (avoids inline-onclick scope issues)
+document.getElementById('add-evidence-btn').addEventListener('click', function() { send('addEvidence'); });
+document.getElementById('resolve-btn').addEventListener('click', function() { send('resolveCase'); });
+document.getElementById('export-btn').addEventListener('click', function() { send('exportCase'); });
+document.getElementById('analysis-toggle').addEventListener('click', function() { toggleAnalysis(); });
 
 send('ready');
 </script>
