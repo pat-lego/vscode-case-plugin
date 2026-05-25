@@ -31,12 +31,13 @@ export class CaseManager {
     } else {
       this.loadFromGlobalState();
     }
-    // Restore the last active case if it still exists, otherwise fall back to
-    // the most recently updated open case so the browser bridge always has
-    // something to report on connection.
+    // Restore the last active case if it still exists and is open, otherwise
+    // fall back to the most recently updated open case so the browser bridge
+    // always has something to report on connection.
     const saved = this.context.globalState.get<string>('investigator.activeCaseId');
-    if (saved && this.sessions.has(saved)) {
-      this.activeCaseId = saved;
+    const savedSession = saved ? this.sessions.get(saved) : undefined;
+    if (savedSession && savedSession.meta.status === 'open') {
+      this.activeCaseId = saved!;
     } else {
       this.activeCaseId = this.pickDefaultActiveCase();
     }

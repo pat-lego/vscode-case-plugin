@@ -12,6 +12,8 @@ import { SignatureProvider } from './providers/signature.provider';
 import { InvestigationWebview } from './providers/investigation.webview';
 import { newCase } from './commands/new-case';
 import { SignatureBuilderPanel } from './panels/signature-builder.webview';
+import { SignatureViewerPanel } from './panels/signature-viewer.webview';
+import { ManualSignatureBuilderPanel } from './panels/manual-signature-builder.webview';
 import { CaseResolutionPanel } from './panels/case-resolution.webview';
 import { ClaudeReviewPanel } from './panels/claude-review.webview';
 
@@ -95,6 +97,14 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand('investigator.buildSignature', (caseId: string, finding: unknown) =>
       SignatureBuilderPanel.show(context, caseId, finding, caseManager, sigService)
+    ),
+    vscode.commands.registerCommand('investigator.viewSignature', (sigId: string) => {
+      const sig = sigService.getById(sigId);
+      if (!sig) { vscode.window.showWarningMessage(`Signature "${sigId}" not found.`); return; }
+      SignatureViewerPanel.show(context, sig);
+    }),
+    vscode.commands.registerCommand('investigator.newSignature', () =>
+      ManualSignatureBuilderPanel.show(context, sigService)
     ),
     vscode.commands.registerCommand('investigator.reloadSignatures', () => {
       sigService.reload();

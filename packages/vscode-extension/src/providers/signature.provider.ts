@@ -3,12 +3,20 @@ import { Signature } from '@incident-investigator/core';
 import { SignatureService } from '../services/signature-service';
 
 export class SignatureItem extends vscode.TreeItem {
+  readonly sigId: string;
+
   constructor(sig: Signature) {
     super(sig.name, vscode.TreeItemCollapsibleState.None);
+    this.sigId = sig.id;
     this.tooltip = sig.description;
     this.description = `v${sig.version}`;
     this.iconPath = new vscode.ThemeIcon('symbol-event');
     this.contextValue = 'signature';
+    this.command = {
+      command: 'investigator.viewSignature',
+      title: 'View',
+      arguments: [sig.id],
+    };
   }
 }
 

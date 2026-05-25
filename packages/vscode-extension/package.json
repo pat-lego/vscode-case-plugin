@@ -73,7 +73,9 @@
       { "command": "investigator.sendToAI", "title": "Send Case to AI", "icon": "$(robot)" },
       { "command": "investigator.runStaticAnalysis", "title": "Run Static Analysis", "icon": "$(beaker)" },
       { "command": "investigator.filterOpenCases", "title": "Filter Open Cases", "icon": "$(search)" },
-      { "command": "investigator.filterClosedCases", "title": "Filter Closed Cases", "icon": "$(search)" }
+      { "command": "investigator.filterClosedCases", "title": "Filter Closed Cases", "icon": "$(search)" },
+      { "command": "investigator.viewSignature", "title": "View Signature" },
+      { "command": "investigator.newSignature", "title": "New Signature", "icon": "$(add)" }
     ],
     "menus": {
       "view/title": [
@@ -94,6 +96,11 @@
         },
         {
           "command": "investigator.reloadSignatures",
+          "when": "view == investigator.signatures",
+          "group": "navigation"
+        },
+        {
+          "command": "investigator.newSignature",
           "when": "view == investigator.signatures",
           "group": "navigation"
         }
@@ -118,6 +125,11 @@
           "command": "investigator.runStaticAnalysis",
           "when": "(view == investigator.openCases || view == investigator.closedCases) && viewItem == case",
           "group": "navigation@3"
+        },
+        {
+          "command": "investigator.viewSignature",
+          "when": "view == investigator.signatures && viewItem == signature",
+          "group": "navigation"
         }
       ]
     },
@@ -163,7 +175,9 @@
     "build": "node esbuild.js",
     "build:tsc": "tsc",
     "typecheck": "tsc --noEmit",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies"
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@incident-investigator/core": "*",
@@ -174,6 +188,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.5.10",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.1"
   }
 }

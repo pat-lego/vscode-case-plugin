@@ -5,6 +5,16 @@ import * as fs from 'fs';
 
 vi.mock('vscode', () => import('./__mocks__/vscode'));
 
+// Mock the `ws` package so WebSocket.WebSocket.OPEN resolves to 1.
+vi.mock('ws', () => {
+  const WS = { OPEN: 1, CONNECTING: 0, CLOSING: 2, CLOSED: 3 };
+  const WebSocketClass = Object.assign(function () {}, WS, { WebSocket: WS });
+  return {
+    default: WebSocketClass,
+    WebSocketServer: vi.fn().mockReturnValue({ on: vi.fn(), close: vi.fn() }),
+  };
+});
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function makeFakeWs() {

@@ -1,4 +1,7 @@
 import * as http from 'http';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CaseManager } from './case-manager';
@@ -184,9 +187,38 @@ export class BridgeServer implements vscode.Disposable {
       return { ok: false, error: 'No active case — open an investigation in VS Code first.' };
     }
     const name = String(msg.name ?? `${msg.source ?? 'capture'}-${Date.now()}`);
-    const content = String(msg.content ?? msg.data ?? '');
+
+    let content = '';
+    let filePath = '';
+
+    if (msg.type === 'screenshot' && typeof msg.data === 'string' && msg.data.startsWith('data:')) {
+      // Decode base64 data URL and write the binary to the case directory (tmpdir as fallback).
+      const match = msg.data.match(/^data:[^;]+;base64,([\s\S]*)$/);
+      if (match) {
+        const session = this.caseManager.getSession(caseId);
+        let destDir: string;
+        if (session?.casePath) {
+          destDir = path.join(session.casePath, caseId);
+          try { fs.mkdirSync(destDir, { recursive: true }); } catch { /* best-effort */ }
+        } else {
+          destDir = os.tmpdir();
+        }
+        filePath = path.join(destDir, name);
+        try {
+          fs.writeFileSync(filePath, Buffer.from(match[1], 'base64'));
+        } catch (e) {
+          this.out?.appendLine(`[bridge] screenshot write failed: ${e}`);
+          filePath = '';
+        }
+      }
+      // Screenshot with non-data: URL: security — don't fetch remote URLs; content and filePath stay empty.
+    } else if (msg.type !== 'screenshot') {
+      content = String(msg.content ?? msg.data ?? '');
+    }
+
     this.out?.appendLine(`[bridge] processCapture caseId=${caseId} name=${name} contentLen=${content.length}`);
-    this.analysisService.processEvidence(caseId, name, content, '');
+    this.analysisService.processEvidence(caseId, name, content, filePath);
+    vscode.window.showInformationMessage(`[II] Captured: ${name}`);
     this.captureEmitter.fire({ caseId, name });
     return { ok: true, name, caseId };
   }
