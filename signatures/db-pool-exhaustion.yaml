@@ -1,37 +1,66 @@
 id: db-pool-exhaustion
 name: Database Connection Pool Exhaustion
 description: >
-  Multiple threads are blocked waiting on the same monitor address, which
-  resolves to a connection pool class (HikariCP, c3p0, DBCP). This means
-  the pool has no available connections and threads are queuing for one.
-  Visible in a single thread dump — no second dump required.
+  Multiple threads are blocked waiting to acquire a database connection from
+  the pool. In a thread dump this appears as many threads in the BLOCKED state,
+  all showing "waiting to lock <0x...>" on the same hex monitor address, where
+  that address resolves to a connection pool class such as HikariPool or c3p0.
+
+  The pool has a fixed maximum number of connections. When all connections are
+  in use and a new thread requests one, it blocks on the pool's internal lock
+  until a connection is returned. If the threads holding connections are slow
+  (due to a slow query, a locked DB row, or an unreachable DB host), the
+  queue of waiting threads grows until threads time out or the JVM runs out
+  of capacity.
+
+  The lock-holder thread — the one currently holding the pool monitor — is the
+  most important thread to find. Its stack trace shows what the active DB
+  connection is doing and why it has not been returned yet.
 version: "1.1"
 
 conditions:
   - field: maxBlockedOnSingleMonitor
     operator: gte
     value: 5
-    description: "5+ threads blocked on the same monitor address"
+    description: >
+      The max number of threads waiting on any single monitor address across
+      all dumps. In the raw dump these appear as consecutive thread blocks all
+      containing the line "- waiting to lock <0xSAME_ADDRESS>". A value of 5
+      means at least 5 threads are queued for the same lock right now. This
+      fires from a single dump — no second dump required.
   - field: topBlockedMonitorClass
     operator: matches
     value: "(?i)(hikari|c3p0|dbcp|commons.pool|tomcat.jdbc|BoneCP|vibur)"
-    description: "Contended monitor is a known connection pool class"
+    description: >
+      The class name extracted from the monitor line in the dump, which looks
+      like "- waiting to lock <0x...> (a com.zaxxer.hikari.pool.HikariPool)".
+      The text in parentheses is the class of the object being locked. This
+      condition checks whether that class name belongs to a known connection
+      pool implementation (HikariCP, c3p0, Apache DBCP, Tomcat JDBC Pool, etc.).
+      If the class matches, the contention is definitely on the pool itself —
+      not some unrelated lock.
   - field: persistentBlockedMonitors
     operator: gte
     value: 1
-    description: "Same monitor still blocked in a second dump (confirms pool is not recovering)"
+    description: >
+      The count of monitor addresses that are blocked in 2 or more separate
+      dumps. Requires at least two dumps to be present in the case. If this
+      fires it confirms the pool is not recovering between observations —
+      the root cause (slow query, unreachable DB) is still active. A value
+      of 0 here does not rule out pool exhaustion; it just means only one
+      dump was analysed.
 
 indicators:
-  - "Threads queued on connection pool monitor — pool has no free connections"
-  - "The thread holding the lock is either running a slow query or the DB host is unreachable"
-  - "Adding more pool connections may help short-term but masks the underlying cause"
+  - "Threads show BLOCKED state with 'waiting to lock' on a connection pool monitor"
+  - "The lock-holder thread's stack reveals what DB operation is holding the connection"
+  - "Pool exhaustion is a symptom — the root cause is why connections are not being returned"
 
 nextSteps:
-  - "Find the lock-holder thread in the dump — its stack shows what the active DB connection is doing"
-  - "Check DB server: slow query log, active connections, lock waits"
-  - "Fetch Splunk: connection timeout / pool exhausted errors ±5min"
-  - "Check max-pool-size config — is it lower than expected concurrent load?"
-  - "Look for long-running transactions holding connections open"
+  - "Find the lock-holder thread in the dump (the thread that 'locked <0x...>' without 'waiting to lock') — its stack shows the slow operation"
+  - "Check the DB server: slow query log, current active connections, row-level lock waits"
+  - "Fetch Splunk: search for 'connection timeout' or 'pool exhausted' errors ±5min"
+  - "Check the pool max-size config — is it lower than the number of concurrent requests?"
+  - "Look for long-running transactions that are holding connections open across multiple requests"
 
 relatedSignatures:
   - hot-endpoint

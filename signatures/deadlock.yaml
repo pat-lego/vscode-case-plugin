@@ -1,30 +1,70 @@
 id: deadlock
 name: Thread Deadlock
 description: >
-  Two or more threads are blocked waiting on monitors held by each other,
-  creating a circular dependency that cannot resolve without intervention.
-version: "1.0"
+  Two or more threads are each waiting to acquire a lock held by the other,
+  creating a circular dependency that can never resolve on its own. In a thread
+  dump a deadlock is visible in a single dump — you do not need multiple dumps.
+
+  It appears as: thread A is BLOCKED showing "waiting to lock <0xADDR1>", and
+  the thread that holds <0xADDR1> is thread B, which is itself BLOCKED showing
+  "waiting to lock <0xADDR2>", and the thread that holds <0xADDR2> is thread A.
+  jstack will often print a "Found one Java-level deadlock" section at the end
+  of the dump explicitly identifying the cycle.
+
+  The engine detects deadlock candidates by looking for 2 or more distinct
+  monitor addresses with blocked waiters in the same dump. This is necessary
+  but not sufficient — two unrelated lock contentions would also produce this
+  signal. The confirming step is to trace the lock-holder chain and verify
+  the cycle. A persistent blocked monitor across multiple dumps is a strong
+  confirmation because a single transient contention typically resolves quickly.
+version: "1.1"
 
 conditions:
-  - field: persistentBlockedMonitors
+  - field: blockedMonitorCount
     operator: gte
     value: 2
-    description: "Multiple monitors persistently blocked across dumps"
+    description: >
+      The count of distinct monitor addresses that have at least one thread
+      blocked on them in a single dump. Each monitor appears in the dump as
+      "- waiting to lock <0xADDR> (a some.ClassName)". A value of 2 means
+      there are two different objects being contended simultaneously. This fires
+      from a single dump. Two or more contested monitors is the minimum
+      structural requirement for a deadlock — you cannot have a cycle with
+      only one lock.
   - field: blockedThreadCount
     operator: gte
     value: 2
-    description: "Multiple threads in BLOCKED state"
+    description: >
+      The maximum count of threads in the BLOCKED state across all dumps in
+      the case. BLOCKED (not WAITING) specifically means a thread is trying to
+      enter a synchronized block or method and cannot because another thread
+      holds the monitor. WAITING threads are voluntarily parked; BLOCKED threads
+      are involuntarily stopped. Two or more BLOCKED threads is required to
+      form a deadlock cycle.
+  - field: persistentBlockedMonitors
+    operator: gte
+    value: 1
+    description: >
+      The count of monitor addresses that remain blocked across 2 or more
+      separate dumps. Requires at least two dumps. A deadlock never self-resolves,
+      so the same monitor addresses should appear blocked in every subsequent
+      dump. If this fires it provides strong confirmation — transient lock
+      contention typically clears within seconds, but a deadlocked monitor
+      stays blocked indefinitely. A value of 0 does not rule out deadlock;
+      it means only one dump was provided.
 
 indicators:
-  - "Circular lock dependency detected"
-  - "Affected threads will not recover without restart"
-  - "Root cause is usually an ordering inconsistency in lock acquisition"
+  - "Multiple distinct monitor addresses have blocked threads simultaneously"
+  - "BLOCKED threads (not WAITING) — these are stopped at a synchronized entry point"
+  - "A deadlock will not resolve without a thread interrupt or service restart"
+  - "jstack output may contain an explicit 'Found one Java-level deadlock' section — check the end of the dump"
 
 nextSteps:
-  - "Identify the circular wait chain in the thread dump"
-  - "No Splunk needed — deadlock is self-evident from dumps"
-  - "Restart affected service to restore operation"
-  - "File a bug: lock acquisition order must be made consistent"
+  - "Search the end of the thread dump for 'Found one Java-level deadlock' — jstack prints the cycle explicitly"
+  - "If not printed: for each blocked thread, find who holds its waited monitor, then check if that holder is also blocked — trace until you find the cycle"
+  - "No Splunk needed for diagnosis — the dump is self-contained evidence"
+  - "Restart the affected service to recover — deadlocks do not self-resolve"
+  - "File a bug: find the two synchronized blocks that acquire the same pair of locks in different order and make the order consistent"
 
 relatedSignatures:
   - db-pool-exhaustion

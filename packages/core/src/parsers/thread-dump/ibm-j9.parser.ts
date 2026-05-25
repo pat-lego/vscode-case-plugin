@@ -1,4 +1,6 @@
-import { ThreadDumpSignals, ThreadState, StackFingerprint, BlockedMonitor } from '../../types/signal';
+import { ThreadDumpSignals, ThreadState, StackFingerprint } from '../../types/signal';
+
+const GC_THREAD_PATTERN = /^(GC |MM |Finaliz|J9VMGCCompact|MemoryAlarm|GCWorker)/i;
 
 interface RawThread {
   name: string;
@@ -18,6 +20,7 @@ export function parseIbmJ9(raw: string, capturedAt: Date): ThreadDumpSignals {
   const ioThreadCount = threads.filter(t =>
     t.frames.some(f => f.includes('java/io/') || f.includes('java/net/'))
   ).length;
+  const gcThreadCount = threads.filter(t => GC_THREAD_PATTERN.test(t.name)).length;
 
   return {
     capturedAt,
@@ -26,6 +29,7 @@ export function parseIbmJ9(raw: string, capturedAt: Date): ThreadDumpSignals {
     stackFingerprints: fingerprints,
     blockedMonitors: [],
     ioThreadCount,
+    gcThreadCount,
     format: 'ibm-j9'
   };
 }

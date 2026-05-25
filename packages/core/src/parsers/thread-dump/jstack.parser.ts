@@ -1,5 +1,8 @@
 import { ThreadDumpSignals, ThreadState, StackFingerprint, BlockedMonitor } from '../../types/signal';
 
+// Matches JVM GC thread names across HotSpot (Parallel, G1, ZGC, Shenandoah), CMS, and IBM J9
+const GC_THREAD_PATTERN = /^(GC |Gang |G1 |ConcurrentMark|concurrent mark|ZWorker|ZDirector|ZStat|ZRemap|Shenandoah|VM Thread|Finalizer|Reference Handler|Signal Dispatcher)/i;
+
 interface RawThread {
   name: string;
   state: ThreadState;
@@ -84,6 +87,8 @@ function buildSignals(threads: RawThread[], capturedAt: Date, format: 'jstack'):
     t.frames.some(f => f.startsWith('java.io.') || f.startsWith('sun.nio.') || f.startsWith('java.net.'))
   ).length;
 
+  const gcThreadCount = threads.filter(t => GC_THREAD_PATTERN.test(t.name)).length;
+
   return {
     capturedAt,
     totalThreadCount: threads.length,
@@ -91,6 +96,7 @@ function buildSignals(threads: RawThread[], capturedAt: Date, format: 'jstack'):
     stackFingerprints: fingerprints,
     blockedMonitors,
     ioThreadCount,
+    gcThreadCount,
     format
   };
 }

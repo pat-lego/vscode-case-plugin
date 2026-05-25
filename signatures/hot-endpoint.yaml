@@ -1,31 +1,52 @@
 id: hot-endpoint
 name: Hot Endpoint / Request Flood
 description: >
-  A disproportionate number of threads are executing the same endpoint or
-  stack path, indicating a request flood, missing cache, or runaway client.
-version: "1.0"
+  A large fraction of the thread pool is executing the exact same code path
+  at the same moment. In a thread dump this appears as dozens or hundreds of
+  threads with identical top stack frames — all calling the same controller
+  method, servlet, or internal service method.
+
+  The engine groups threads by their top 3 stack frames (called a "fingerprint").
+  When one fingerprint dominates the dump, it means all those threads received
+  the same type of request and are processing it concurrently. Normal traffic
+  produces many different fingerprints. A flood produces one.
+
+  Common causes: a missing or broken cache forcing every request to recompute
+  the same expensive result; a runaway scheduled job or monitoring client making
+  repeated calls; an upstream retry storm amplifying a slow response.
+version: "1.1"
 
 conditions:
   - field: dominantFingerprintCount
     operator: gte
     value: 50
-    description: "50+ threads executing identical stack"
+    description: >
+      The engine groups all threads by their top 3 stack frames. This field is
+      the thread count of the largest such group. A value of 50 means at least
+      50 threads share identical top frames — they are all doing the same thing
+      at the same time. In the raw dump you would see the same "at com.example..."
+      lines repeated across many consecutive thread blocks.
   - field: dominantFingerprintRatio
     operator: gte
     value: 0.25
-    description: "25%+ of threads on same fingerprint"
+    description: >
+      The dominant fingerprint count divided by total thread count. A value of
+      0.25 means 1 in 4 threads is on the same code path. Normal busy systems
+      rarely exceed 0.10 for any single path — 0.25 or higher indicates a
+      concentration that is almost certainly abnormal rather than coincidental
+      high load.
 
 indicators:
-  - "High volume of identical requests consuming thread pool"
-  - "Possible missing or broken cache layer"
-  - "Possible runaway client or polling loop"
+  - "One stack fingerprint accounts for 25%+ of all threads"
+  - "All affected threads are RUNNABLE — they are actively processing, not waiting"
+  - "The dominant top frame identifies the exact method being flooded"
 
 nextSteps:
-  - "Check for recent deploys to this service"
-  - "Verify cache layer is active and healthy"
-  - "Fetch Splunk: endpoint error rate ±5min"
-  - "Check for a specific client IP generating volume"
+  - "Look at the top frame of the dominant fingerprint — that is the entry point being hit"
+  - "Check for a recent deploy that may have disabled or misconfigured the cache"
+  - "Check Splunk for request rate on that endpoint ±5min — look for a spike"
+  - "Check for a single client IP or service account generating the volume"
+  - "If it is a scheduled job, check whether it is running more frequently than intended"
 
 relatedSignatures:
-  - missing-cache
-  - thread-pool-exhaustion
+  - db-pool-exhaustion

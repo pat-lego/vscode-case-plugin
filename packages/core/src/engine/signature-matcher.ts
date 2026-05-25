@@ -65,6 +65,8 @@ function resolveField(field: string, signals: ExtractedSignals): number | string
     case 'persistentBlockedMonitors':   return summary.persistentBlockedMonitors.length;
     case 'maxBlockedOnSingleMonitor':   return summary.maxBlockedOnSingleMonitor;
     case 'topBlockedMonitorClass':      return summary.topBlockedMonitorClass;
+    case 'blockedMonitorCount':         return summary.blockedMonitorCount;
+    case 'gcThreadCount':               return summary.gcThreadCount;
     default:                            return undefined;
   }
 }

@@ -15,6 +15,11 @@ export interface ThreadDumpSummary {
   maxBlockedOnSingleMonitor: number;
   // Class name of the most-contended monitor (e.g. "com.zaxxer.hikari.pool.HikariPool")
   topBlockedMonitorClass: string;
+  // Max number of distinct monitor addresses with blocked waiters in any single dump.
+  // 2+ distinct blocked monitors in one dump is a deadlock indicator.
+  blockedMonitorCount: number;
+  // Max GC thread count across all dumps (threads named after JVM GC subsystems).
+  gcThreadCount: number;
   ioSaturationDetected: boolean;
   threadCountAnomaly: boolean;
 }
@@ -78,6 +83,8 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
   }
 
   const avgIoRatio = dumps.reduce((s, d) => s + d.ioThreadCount / d.totalThreadCount, 0) / dumps.length;
+  const blockedMonitorCount = Math.max(...dumps.map(d => d.blockedMonitors.length));
+  const gcThreadCount = Math.max(...dumps.map(d => d.gcThreadCount));
 
   return {
     threadDumps: dumps,
@@ -88,6 +95,8 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
       persistentBlockedMonitors,
       maxBlockedOnSingleMonitor,
       topBlockedMonitorClass,
+      blockedMonitorCount,
+      gcThreadCount,
       ioSaturationDetected: avgIoRatio > IO_THREAD_RATIO_THRESHOLD,
       threadCountAnomaly: maxThreadCount > THREAD_COUNT_THRESHOLD
     }
@@ -102,6 +111,8 @@ function emptySummary(): ThreadDumpSummary {
     persistentBlockedMonitors: [],
     maxBlockedOnSingleMonitor: 0,
     topBlockedMonitorClass: '',
+    blockedMonitorCount: 0,
+    gcThreadCount: 0,
     ioSaturationDetected: false,
     threadCountAnomaly: false
   };

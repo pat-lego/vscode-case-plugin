@@ -1,4 +1,6 @@
-import { ThreadDumpSignals, ThreadState, StackFingerprint, BlockedMonitor } from '../../types/signal';
+import { ThreadDumpSignals, ThreadState, StackFingerprint } from '../../types/signal';
+
+const GC_THREAD_PATTERN = /^(GC |Gang |G1 |ConcurrentMark|concurrent mark|ZWorker|Shenandoah|MM |GCWorker)/i;
 
 export function parseGeneric(raw: string, capturedAt: Date): ThreadDumpSignals {
   const lines = raw.split('\n');
@@ -31,6 +33,11 @@ export function parseGeneric(raw: string, capturedAt: Date): ThreadDumpSignals {
     threadNames: []
   };
 
+  // Best-effort GC thread count from raw text lines that look like GC thread headers
+  const gcThreadCount = raw.split('\n')
+    .filter(line => GC_THREAD_PATTERN.test(line.trim()))
+    .length;
+
   return {
     capturedAt,
     totalThreadCount,
@@ -38,6 +45,7 @@ export function parseGeneric(raw: string, capturedAt: Date): ThreadDumpSignals {
     stackFingerprints: frames.length > 0 ? [fingerprint] : [],
     blockedMonitors: [],
     ioThreadCount: frames.filter(f => f.startsWith('java.io.') || f.startsWith('sun.nio.')).length,
+    gcThreadCount,
     format: 'generic'
   };
 }

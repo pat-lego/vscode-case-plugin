@@ -5,6 +5,10 @@ export interface ThreadDumpSignals {
   stackFingerprints: StackFingerprint[];
   blockedMonitors: BlockedMonitor[];
   ioThreadCount: number;
+  // Threads whose names match JVM GC patterns (e.g. "GC task thread#0", "G1 Conc#0").
+  // These are always present — a non-zero count doesn't mean a pause is active.
+  // A very high count relative to the app can indicate heavy GC activity.
+  gcThreadCount: number;
   format: ThreadDumpFormat;
 }
 
