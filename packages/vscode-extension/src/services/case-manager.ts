@@ -157,7 +157,11 @@ export class CaseManager {
     session.meta.resolution = resolution;
     session.meta.resolvedBy = resolvedBy;
     session.meta.updatedAt = new Date();
+    // If the case was loaded as a read-only Obsidian note, convert it to a
+    // managed case now that the user has explicitly performed a write action.
+    if (session.readonly) session.readonly = false;
     this.save(caseId);
+    this.onActiveChangeEmitter.fire(this.activeCaseId);
   }
 
   reopenCase(caseId: string) {
