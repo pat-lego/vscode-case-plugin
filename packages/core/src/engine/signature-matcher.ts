@@ -62,8 +62,10 @@ function resolveField(field: string, signals: ExtractedSignals): number | string
     case 'dominantFingerprintRatio':   return summary.maxThreadCount > 0
                                          ? (summary.dominantFingerprints[0]?.count ?? 0) / summary.maxThreadCount
                                          : 0;
-    case 'persistentBlockedMonitors':  return summary.persistentBlockedMonitors.length;
-    default:                           return undefined;
+    case 'persistentBlockedMonitors':   return summary.persistentBlockedMonitors.length;
+    case 'maxBlockedOnSingleMonitor':   return summary.maxBlockedOnSingleMonitor;
+    case 'topBlockedMonitorClass':      return summary.topBlockedMonitorClass;
+    default:                            return undefined;
   }
 }
 

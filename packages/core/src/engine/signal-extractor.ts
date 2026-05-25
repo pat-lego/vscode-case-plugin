@@ -10,6 +10,11 @@ export interface ThreadDumpSummary {
   avgThreadCount: number;
   dominantFingerprints: StackFingerprint[];
   persistentBlockedMonitors: string[];
+  // Max threads waiting on a single monitor address across all dumps.
+  // Useful for single-dump analysis — no second dump required.
+  maxBlockedOnSingleMonitor: number;
+  // Class name of the most-contended monitor (e.g. "com.zaxxer.hikari.pool.HikariPool")
+  topBlockedMonitorClass: string;
   ioSaturationDetected: boolean;
   threadCountAnomaly: boolean;
 }
@@ -41,15 +46,36 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
 
-  const monitorMap = new Map<string, number>();
+  // Track how many dumps each monitor address appears in (persistence)
+  // and the max waiters on any single monitor across all dumps (single-dump signal)
+  const monitorDumpCount = new Map<string, number>();
+  const monitorMaxWaiters = new Map<string, number>();
+  const monitorClass = new Map<string, string>();
+
   for (const dump of dumps) {
     for (const monitor of dump.blockedMonitors) {
-      monitorMap.set(monitor.monitorAddress, (monitorMap.get(monitor.monitorAddress) ?? 0) + 1);
+      monitorDumpCount.set(monitor.monitorAddress, (monitorDumpCount.get(monitor.monitorAddress) ?? 0) + 1);
+      const prev = monitorMaxWaiters.get(monitor.monitorAddress) ?? 0;
+      if (monitor.waitingThreadCount > prev) {
+        monitorMaxWaiters.set(monitor.monitorAddress, monitor.waitingThreadCount);
+        monitorClass.set(monitor.monitorAddress, monitor.monitorClass);
+      }
     }
   }
-  const persistentBlockedMonitors = Array.from(monitorMap.entries())
+
+  const persistentBlockedMonitors = Array.from(monitorDumpCount.entries())
     .filter(([, count]) => count > 1)
     .map(([addr]) => addr);
+
+  // Find the monitor with the most waiters across all dumps
+  let maxBlockedOnSingleMonitor = 0;
+  let topBlockedMonitorClass = '';
+  for (const [addr, waiters] of monitorMaxWaiters) {
+    if (waiters > maxBlockedOnSingleMonitor) {
+      maxBlockedOnSingleMonitor = waiters;
+      topBlockedMonitorClass = monitorClass.get(addr) ?? '';
+    }
+  }
 
   const avgIoRatio = dumps.reduce((s, d) => s + d.ioThreadCount / d.totalThreadCount, 0) / dumps.length;
 
@@ -60,6 +86,8 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
       avgThreadCount,
       dominantFingerprints,
       persistentBlockedMonitors,
+      maxBlockedOnSingleMonitor,
+      topBlockedMonitorClass,
       ioSaturationDetected: avgIoRatio > IO_THREAD_RATIO_THRESHOLD,
       threadCountAnomaly: maxThreadCount > THREAD_COUNT_THRESHOLD
     }
@@ -72,6 +100,8 @@ function emptySummary(): ThreadDumpSummary {
     avgThreadCount: 0,
     dominantFingerprints: [],
     persistentBlockedMonitors: [],
+    maxBlockedOnSingleMonitor: 0,
+    topBlockedMonitorClass: '',
     ioSaturationDetected: false,
     threadCountAnomaly: false
   };

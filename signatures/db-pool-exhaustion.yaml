@@ -1,31 +1,38 @@
 id: db-pool-exhaustion
 name: Database Connection Pool Exhaustion
 description: >
-  Multiple threads are blocked waiting to acquire a database connection,
-  indicating the connection pool is exhausted.
-version: "1.0"
+  Multiple threads are blocked waiting on the same monitor address, which
+  resolves to a connection pool class (HikariCP, c3p0, DBCP). This means
+  the pool has no available connections and threads are queuing for one.
+  Visible in a single thread dump — no second dump required.
+version: "1.1"
 
 conditions:
-  - field: blockedThreadCount
+  - field: maxBlockedOnSingleMonitor
     operator: gte
-    value: 10
-    description: "10+ threads in BLOCKED state"
+    value: 5
+    description: "5+ threads blocked on the same monitor address"
+  - field: topBlockedMonitorClass
+    operator: matches
+    value: "(?i)(hikari|c3p0|dbcp|commons.pool|tomcat.jdbc|BoneCP|vibur)"
+    description: "Contended monitor is a known connection pool class"
   - field: persistentBlockedMonitors
     operator: gte
     value: 1
-    description: "Blocked monitor persists across dumps"
+    description: "Same monitor still blocked in a second dump (confirms pool is not recovering)"
 
 indicators:
-  - "DB connection pool exhausted"
-  - "Threads queued waiting for available connection"
-  - "Upstream slowness may be amplifying pool pressure"
+  - "Threads queued on connection pool monitor — pool has no free connections"
+  - "The thread holding the lock is either running a slow query or the DB host is unreachable"
+  - "Adding more pool connections may help short-term but masks the underlying cause"
 
 nextSteps:
-  - "Check DB pool configuration (max connections)"
-  - "Fetch Splunk: connection timeout errors ±5min"
-  - "Check DB server for slow queries or lock contention"
-  - "Look for upstream service calls holding connections open"
+  - "Find the lock-holder thread in the dump — its stack shows what the active DB connection is doing"
+  - "Check DB server: slow query log, active connections, lock waits"
+  - "Fetch Splunk: connection timeout / pool exhausted errors ±5min"
+  - "Check max-pool-size config — is it lower than expected concurrent load?"
+  - "Look for long-running transactions holding connections open"
 
 relatedSignatures:
   - hot-endpoint
-  - slow-query
+  - deadlock
