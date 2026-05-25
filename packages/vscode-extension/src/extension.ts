@@ -14,12 +14,15 @@ import { CaseResolutionPanel } from './panels/case-resolution.webview';
 import { ClaudeReviewPanel } from './panels/claude-review.webview';
 
 export function activate(context: vscode.ExtensionContext) {
+  const out = vscode.window.createOutputChannel('Incident Investigator');
+  context.subscriptions.push(out);
+
   // Services
   const caseManager     = new CaseManager(context);
   const sigService      = new SignatureService(context);
   const analysisService = new AnalysisService(caseManager, sigService);
   const exportService   = new ExportService();
-  const bridgeServer    = new BridgeServer(caseManager, analysisService);
+  const bridgeServer    = new BridgeServer(caseManager, analysisService, out);
 
   // Providers
   const sidebarProvider = new SidebarProvider(caseManager);
@@ -33,14 +36,24 @@ export function activate(context: vscode.ExtensionContext) {
   const cfg = vscode.workspace.getConfiguration('investigator');
   bridgeServer.start(cfg.get<number>('bridgePort') ?? 7734);
 
+  // Log startup state so we can diagnose active-case issues
+  out.appendLine(`[init] sessions=${caseManager.getAllCases().length} activeCaseId=${caseManager.getActiveCaseId() ?? 'null'}`);
+
   // Status bar bridge indicator
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusItem.text = '$(circle-outline) Bridge';
-  statusItem.tooltip = 'Incident Investigator: browser extension bridge';
-  statusItem.show();
-  bridgeServer.onStatusChange(connected => {
+  const updateStatusBar = () => {
+    const connected = bridgeServer.isConnected();
+    const caseId = caseManager.getActiveCaseId();
     statusItem.text = connected ? '$(circle-filled) Bridge' : '$(circle-outline) Bridge';
     statusItem.color = connected ? new vscode.ThemeColor('charts.green') : undefined;
+    statusItem.tooltip = `Incident Investigator bridge\nActive case: ${caseId ?? 'none'}`;
+  };
+  updateStatusBar();
+  statusItem.show();
+  bridgeServer.onStatusChange(() => updateStatusBar());
+  caseManager.onActiveChange(id => {
+    out.appendLine(`[activeCase] → ${id ?? 'null'}`);
+    updateStatusBar();
   });
 
   // Restart bridge if port config changes

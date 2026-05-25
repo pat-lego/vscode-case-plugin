@@ -34,6 +34,7 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:#cccccc
   <div class="dot" id="dot"></div>
   <span class="header-title">Incident Investigator</span>
   <span id="status-label" style="font-size:11px;color:#888">Disconnected</span>
+  <button id="refresh-btn" title="Refresh active case" style="background:none;border:none;color:#888;cursor:pointer;font-size:13px;padding:0 2px;line-height:1;display:none">&#x21bb;</button>
 </div>
 <div class="body">
   <div class="section">
@@ -55,9 +56,10 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:#cccccc
 
   <div class="port-row">
     <input type="number" id="port-input" placeholder="Port (7734)" min="1024" max="65535">
-    <button class="btn secondary" onclick="updatePort()">Set</button>
+    <button class="btn secondary" id="port-set-btn">Set</button>
   </div>
   <div class="status-text" id="feedback"></div>
+  <div id="debug" style="font-size:9px;color:#555;font-family:monospace;padding:4px 0;word-break:break-all;"></div>
 </div>
 
 <script src="popup.js"></script>

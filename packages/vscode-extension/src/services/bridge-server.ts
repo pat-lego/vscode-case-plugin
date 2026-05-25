@@ -27,7 +27,8 @@ export class BridgeServer implements vscode.Disposable {
 
   constructor(
     private caseManager: CaseManager,
-    private analysisService: AnalysisService
+    private analysisService: AnalysisService,
+    private out?: vscode.OutputChannel
   ) {
     this.caseManager.onActiveChange(() => this.broadcastActiveCase());
   }
@@ -39,16 +40,48 @@ export class BridgeServer implements vscode.Disposable {
   start(port: number) {
     if (this.server || this.httpServer) return;
 
-    // HTTP server handles Chrome's Private Network Access preflight (OPTIONS) as
-    // well as any plain HTTP probes from the browser extension.
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Private-Network': 'true',
+      'Access-Control-Allow-Headers': 'content-type',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    };
+
     this.httpServer = http.createServer((req, res) => {
-      res.writeHead(req.method === 'OPTIONS' ? 200 : 200, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Private-Network': 'true',
-        'Access-Control-Allow-Headers': 'content-type',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Content-Type': 'text/plain',
-      });
+      if (req.method === 'OPTIONS') {
+        res.writeHead(200, corsHeaders);
+        res.end();
+        return;
+      }
+
+      if (req.url === '/state') {
+        const payload = this.activeCasePayload();
+        this.out?.appendLine(`[bridge] GET /state → ${JSON.stringify(payload)}`);
+        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+
+      // POST /capture: browser sends evidence via HTTP when WS messages are unreliable.
+      if (req.method === 'POST' && req.url === '/capture') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const msg = JSON.parse(body) as Record<string, unknown>;
+            this.out?.appendLine(`[bridge] POST /capture type=${msg.type} name=${msg.name ?? ''}`);
+            const result = this.processCapture(msg);
+            res.writeHead(result.ok ? 200 : 400, { ...corsHeaders, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+          } catch (e) {
+            res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: String(e) }));
+          }
+        });
+        return;
+      }
+
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'text/plain' });
       res.end('Investigation Bridge');
     });
 
@@ -68,7 +101,9 @@ export class BridgeServer implements vscode.Disposable {
 
     this.server.on('connection', (ws) => {
       this.clients.add(ws);
-      this.sendTo(ws, this.activeCasePayload());
+      const payload = this.activeCasePayload();
+      this.out?.appendLine(`[bridge] client connected → sending ${JSON.stringify(payload)}`);
+      this.sendTo(ws, payload);
       this.statusEmitter.fire(true);
 
       ws.on('message', (raw) => {
@@ -115,7 +150,9 @@ export class BridgeServer implements vscode.Disposable {
   }
 
   broadcastActiveCase() {
-    this.broadcast(this.activeCasePayload());
+    const payload = this.activeCasePayload();
+    this.out?.appendLine(`[bridge] broadcastActiveCase → ${JSON.stringify(payload)}`);
+    this.broadcast(payload);
   }
 
   private handleMessage(ws: WebSocket.WebSocket, msg: Record<string, unknown>) {
@@ -124,20 +161,34 @@ export class BridgeServer implements vscode.Disposable {
       return;
     }
 
-    if (msg.type === 'capture' || msg.type === 'screenshot') {
-      const caseId = this.caseManager.getActiveCaseId();
-      if (!caseId) {
-        this.sendTo(ws, { type: 'error', message: 'No active case — open an investigation in VS Code first.' });
-        return;
-      }
-
-      const name = String(msg.name ?? `${msg.source ?? 'capture'}-${Date.now()}`);
-      const content = String(msg.content ?? msg.data ?? '');
-
-      this.analysisService.processEvidence(caseId, name, content, '');
-      this.captureEmitter.fire({ caseId, name });
-      this.sendTo(ws, { type: 'captureAck', name, caseId });
+    if (msg.type === 'queryActiveCase') {
+      const payload = this.activeCasePayload();
+      this.out?.appendLine(`[bridge] queryActiveCase → ${JSON.stringify(payload)}`);
+      this.sendTo(ws, payload);
+      return;
     }
+
+    if (msg.type === 'capture' || msg.type === 'screenshot') {
+      const result = this.processCapture(msg);
+      if (!result.ok) {
+        this.sendTo(ws, { type: 'error', message: result.error });
+      } else {
+        this.sendTo(ws, { type: 'captureAck', name: result.name, caseId: result.caseId });
+      }
+    }
+  }
+
+  processCapture(msg: Record<string, unknown>): { ok: boolean; name?: string; caseId?: string; error?: string } {
+    const caseId = this.caseManager.getActiveCaseId();
+    if (!caseId) {
+      return { ok: false, error: 'No active case — open an investigation in VS Code first.' };
+    }
+    const name = String(msg.name ?? `${msg.source ?? 'capture'}-${Date.now()}`);
+    const content = String(msg.content ?? msg.data ?? '');
+    this.out?.appendLine(`[bridge] processCapture caseId=${caseId} name=${name} contentLen=${content.length}`);
+    this.analysisService.processEvidence(caseId, name, content, '');
+    this.captureEmitter.fire({ caseId, name });
+    return { ok: true, name, caseId };
   }
 
   private broadcast(payload: object) {

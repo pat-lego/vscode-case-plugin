@@ -43,6 +43,7 @@ export class InvestigationWebview {
   openCase(caseId: string) {
     const existing = this.panels.get(caseId);
     if (existing) {
+      this.caseManager.setActiveCase(caseId);
       existing.reveal(vscode.ViewColumn.One);
       return;
     }

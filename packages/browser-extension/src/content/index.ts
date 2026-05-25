@@ -1,7 +1,12 @@
 import * as splunk from './adapters/splunk.adapter.js';
 import * as generic from './adapters/generic.adapter.js';
 
-// Inject a floating capture button on supported pages
+// Prevent double-registration if the script is injected more than once.
+if ((window as Record<string, unknown>)['__ii_loaded']) {
+  throw new Error('II content script already loaded');
+}
+(window as Record<string, unknown>)['__ii_loaded'] = true;
+
 function injectButton() {
   if (document.getElementById('ii-capture-btn')) return;
 
@@ -26,19 +31,15 @@ function injectButton() {
     userSelect: 'none'
   });
 
-  btn.addEventListener('click', () => triggerCapture());
-  document.body.appendChild(btn);
-
-  // Flash feedback on btn
-  function flash(ok: boolean) {
-    btn.textContent = ok ? '✓ Sent' : '✗ Failed';
-    btn.style.color = ok ? '#4ec9b0' : '#f14c4c';
-    setTimeout(() => { btn.textContent = '⬡ Capture'; btn.style.color = '#cccccc'; }, 1800);
-  }
-
   btn.addEventListener('click', () => {
-    capture().then(ok => flash(ok));
+    capture().then(ok => {
+      btn.textContent = ok ? '✓ Sent' : '✗ Failed';
+      btn.style.color = ok ? '#4ec9b0' : '#f14c4c';
+      setTimeout(() => { btn.textContent = '⬡ Capture'; btn.style.color = '#cccccc'; }, 1800);
+    });
   });
+
+  document.body.appendChild(btn);
 }
 
 async function capture(): Promise<boolean> {
@@ -60,15 +61,6 @@ async function capture(): Promise<boolean> {
       },
       (res: { ok: boolean }) => resolve(res?.ok ?? false)
     );
-  });
-}
-
-// Listen for trigger from background (popup button)
-function triggerCapture() {
-  capture().then(ok => {
-    if (!ok) {
-      showToast('Not connected to VS Code. Open an investigation first.');
-    }
   });
 }
 
@@ -102,26 +94,4 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
   }
 });
 
-function showToast(message: string) {
-  const toast = document.createElement('div');
-  Object.assign(toast.style, {
-    position: 'fixed',
-    bottom: '60px',
-    right: '20px',
-    zIndex: '999999',
-    padding: '8px 14px',
-    background: '#1e1e1e',
-    color: '#f14c4c',
-    border: '1px solid #f14c4c44',
-    borderRadius: '4px',
-    fontFamily: 'system-ui, sans-serif',
-    fontSize: '12px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
-  });
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 3500);
-}
-
-// Only inject button — don't auto-capture on load
 injectButton();

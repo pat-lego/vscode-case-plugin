@@ -6,7 +6,7 @@ export interface BridgeState {
 }
 
 export interface OutboundMessage {
-  type: 'capture' | 'screenshot' | 'ping';
+  type: 'capture' | 'screenshot' | 'ping' | 'queryActiveCase';
   source?: string;
   name?: string;
   content?: string;

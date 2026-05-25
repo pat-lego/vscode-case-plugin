@@ -31,6 +31,24 @@ export class CaseManager {
     } else {
       this.loadFromGlobalState();
     }
+    // Restore the last active case if it still exists, otherwise fall back to
+    // the most recently updated open case so the browser bridge always has
+    // something to report on connection.
+    const saved = this.context.globalState.get<string>('investigator.activeCaseId');
+    if (saved && this.sessions.has(saved)) {
+      this.activeCaseId = saved;
+    } else {
+      this.activeCaseId = this.pickDefaultActiveCase();
+    }
+  }
+
+  private pickDefaultActiveCase(): string | null {
+    let best: CaseSession | undefined;
+    for (const s of this.sessions.values()) {
+      if (s.meta.status !== 'open') continue;
+      if (!best || s.meta.updatedAt > best.meta.updatedAt) best = s;
+    }
+    return best?.meta.id ?? null;
   }
 
   createCase(id: string, title: string, targetCasePath?: string): CaseSession {
@@ -40,6 +58,7 @@ export class CaseManager {
     const session: CaseSession = { meta, threadDumpSignals: [], findings: [], casePath };
     this.sessions.set(id, session);
     this.activeCaseId = id;
+    this.context.globalState.update('investigator.activeCaseId', id);
     this.save(id);
     this.onActiveChangeEmitter.fire(id);
     return session;
@@ -48,6 +67,7 @@ export class CaseManager {
   setActiveCase(caseId: string): boolean {
     if (!this.sessions.has(caseId)) return false;
     this.activeCaseId = caseId;
+    this.context.globalState.update('investigator.activeCaseId', caseId);
     this.onActiveChangeEmitter.fire(caseId);
     return true;
   }
