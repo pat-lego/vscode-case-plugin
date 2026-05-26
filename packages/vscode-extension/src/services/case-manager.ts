@@ -263,7 +263,14 @@ export class CaseManager {
     if (!session || !session.casePath) return;
     const caseDir = path.join(session.casePath, caseId);
     if (!fs.existsSync(caseDir)) return;
-    const extra = scanDirForEvidence(caseDir, session.meta.evidence);
+    // Skip stored content files that the extension itself wrote (ev-*.txt)
+    const storedFilePaths = new Set<string>();
+    for (const ev of session.meta.evidence) {
+      if (!ev.id.startsWith('disk-')) {
+        storedFilePaths.add(path.join(caseDir, `${ev.id}.txt`));
+      }
+    }
+    const extra = scanDirForEvidence(caseDir, session.meta.evidence, storedFilePaths);
     if (extra.length > 0) session.meta.evidence.push(...extra);
   }
 
@@ -341,7 +348,8 @@ export class CaseManager {
           if (result) {
             // Supplement with any non-MD files present in the case directory that
             // are not already tracked in the frontmatter evidence list.
-            const extra = scanDirForEvidence(caseDir, result.meta.evidence);
+            // Pass storedFilePaths so extension-written ev-*.txt files are not re-discovered.
+            const extra = scanDirForEvidence(caseDir, result.meta.evidence, result.storedFilePaths);
             result.meta.evidence.push(...extra);
 
             this.sessions.set(result.meta.id, {
@@ -367,12 +375,13 @@ export class CaseManager {
    * note: the folder name becomes the case ID and the first heading (if any)
    * becomes the title.
    */
-  private parseCaseFile(mdPath: string, caseDir: string): { meta: Case; readonly: boolean } | null {
+  private parseCaseFile(mdPath: string, caseDir: string): { meta: Case; readonly: boolean; storedFilePaths: Set<string> } | null {
     const content = fs.readFileSync(mdPath, 'utf-8');
     const fm = extractFrontmatter(content);
 
     if (fm && fm.case_id) {
       const rawEvidence = Array.isArray(fm.evidence) ? fm.evidence as Record<string, unknown>[] : [];
+      const storedFilePaths = new Set<string>();
 
       const evidence: EvidenceItem[] = rawEvidence.map(raw => {
         const capturedAtRaw = new Date(raw['captured_at'] as string);
@@ -386,6 +395,7 @@ export class CaseManager {
         };
         if (raw['stored_file']) {
           const storedPath = path.join(caseDir, String(raw['stored_file']));
+          storedFilePaths.add(storedPath);
           if (fs.existsSync(storedPath)) {
             item.rawContent = fs.readFileSync(storedPath, 'utf-8');
           }
@@ -406,6 +416,7 @@ export class CaseManager {
           notes: fm.notes ? String(fm.notes) : undefined,
         },
         readonly: false,
+        storedFilePaths,
       };
     }
 
@@ -428,6 +439,7 @@ export class CaseManager {
         notes: body || undefined,
       },
       readonly: true,
+      storedFilePaths: new Set(),
     };
   }
 
@@ -560,8 +572,9 @@ function extractMdBody(content: string): string {
 /**
  * Scans a case directory for non-MD files that are not already tracked in the
  * evidence list, and returns them as EvidenceItem entries.
+ * Pass `skip` to exclude extension-managed stored content files (ev-*.txt).
  */
-function scanDirForEvidence(caseDir: string, existing: EvidenceItem[]): EvidenceItem[] {
+function scanDirForEvidence(caseDir: string, existing: EvidenceItem[], skip?: Set<string>): EvidenceItem[] {
   const trackedPaths = new Set(existing.map(e => e.filePath).filter(Boolean));
   const extra: EvidenceItem[] = [];
 
@@ -579,6 +592,7 @@ function scanDirForEvidence(caseDir: string, existing: EvidenceItem[]): Evidence
 
     const filePath = path.join(caseDir, entry.name);
     if (trackedPaths.has(filePath)) continue;
+    if (skip && skip.has(filePath)) continue;
 
     let stats: fs.Stats;
     try { stats = fs.statSync(filePath); } catch { continue; }

@@ -152,6 +152,51 @@ export class InvestigationWebview {
         break;
       }
 
+      case 'exportJira': {
+        const session = this.caseManager.getSession(caseId);
+        if (!session) return;
+        const rawNotes = String(msg.notes ?? session.meta.notes ?? '');
+        const caseDir = this.caseManager.getCaseDir(caseId);
+        const newEvidence: Array<{id: string; name: string; type: string; timestamp: string}> = [];
+        let snippetIdx = 1;
+
+        // Extract fenced code blocks → save as evidence files
+        const processedNotes = rawNotes.replace(/```[\s\S]*?```/g, (match) => {
+          const inner = match.slice(3, -3).replace(/^[^\n]*\n/, '').trim();
+          const fileName = `snippet-${snippetIdx++}.txt`;
+          if (caseDir) {
+            try {
+              fs.mkdirSync(caseDir, { recursive: true });
+              const filePath = path.join(caseDir, fileName);
+              fs.writeFileSync(filePath, inner, 'utf-8');
+              const item: import('@incident-investigator/core').EvidenceItem = {
+                id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                type: 'generic',
+                source: fileName,
+                capturedAt: new Date(),
+                filePath,
+              };
+              this.caseManager.addEvidence(caseId, item);
+              newEvidence.push({ id: item.id, name: fileName, type: 'generic', timestamp: item.capturedAt.toISOString() });
+            } catch { /* best-effort */ }
+          }
+          return `[${fileName}](./evidence/${fileName})`;
+        });
+
+        if (newEvidence.length > 0) {
+          this.caseManager.updateNotes(caseId, processedNotes);
+        }
+
+        const exportText = buildJiraExport(session, processedNotes);
+        panel.webview.postMessage({
+          type: 'jiraExport',
+          text: exportText,
+          newNotes: newEvidence.length > 0 ? processedNotes : undefined,
+          newEvidence,
+        });
+        break;
+      }
+
       case 'deleteGroup': {
         const group = String(msg.group);
         const session = this.caseManager.getSession(caseId);
@@ -257,6 +302,22 @@ export class InvestigationWebview {
       case 'openSignatureBuilder':
         vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
         break;
+
+      case 'loadPreviewImage': {
+        const session = this.caseManager.getSession(caseId);
+        if (!session || !session.casePath) break;
+        const caseDir = path.join(session.casePath, caseId);
+        const imgSrc = String(msg.src ?? '');
+        const relPath = imgSrc.startsWith('./') ? imgSrc.slice(2) : imgSrc;
+        const absPath = path.isAbsolute(relPath) ? relPath : path.join(caseDir, relPath);
+        try {
+          const data = fs.readFileSync(absPath);
+          const ext = path.extname(absPath).toLowerCase().slice(1);
+          const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : `image/${ext}`;
+          panel.webview.postMessage({ type: 'previewImageLoaded', src: imgSrc, dataUri: `data:${mime};base64,${data.toString('base64')}` });
+        } catch { /* image not found — img stays blank */ }
+        break;
+      }
     }
   }
 
@@ -475,6 +536,35 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 #case-title[contenteditable]{outline:none;cursor:text;border-bottom:1px solid transparent;padding:0 2px;border-radius:1px;font-weight:inherit}
 #case-title[contenteditable]:hover{border-bottom-color:var(--vscode-descriptionForeground)}
 #case-title[contenteditable]:focus{border-bottom-color:var(--vscode-focusBorder)}
+.preview-btn{background:none;border:1px solid var(--vscode-panel-border);color:var(--vscode-descriptionForeground);cursor:pointer;padding:1px 6px;font-size:10px;border-radius:2px;white-space:nowrap;flex-shrink:0}
+.preview-btn:hover{color:var(--vscode-foreground);border-color:var(--vscode-foreground)}
+.preview-btn.active{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:transparent}
+.notes-preview{flex:1;overflow-y:auto;padding:8px 10px;display:none;font-size:var(--vscode-font-size);line-height:1.6;color:var(--vscode-editor-foreground)}
+.notes-preview h1,.notes-preview h2,.notes-preview h3,.notes-preview h4{font-weight:600;margin:12px 0 6px;line-height:1.3;color:var(--vscode-foreground)}
+.notes-preview h1{font-size:1.4em}.notes-preview h2{font-size:1.2em}.notes-preview h3{font-size:1.05em}
+.notes-preview p{margin:0 0 6px}
+.notes-preview ul,.notes-preview ol{margin:0 0 6px;padding-left:20px}
+.notes-preview li{margin:2px 0}
+.notes-preview pre{background:var(--vscode-sideBar-background);border:1px solid var(--vscode-panel-border);border-radius:3px;padding:8px;overflow-x:auto;margin:0 0 8px;font-family:var(--vscode-editor-font-family,monospace);font-size:.95em}
+.notes-preview code{font-family:var(--vscode-editor-font-family,monospace);font-size:.95em;background:var(--vscode-sideBar-background);padding:1px 4px;border-radius:2px}
+.notes-preview pre code{background:none;padding:0}
+.notes-preview a{color:var(--vscode-textLink-foreground,#3794ff);text-decoration:none;cursor:default}
+.notes-preview hr{border:none;border-top:1px solid var(--vscode-panel-border);margin:10px 0}
+.notes-preview strong{font-weight:700}
+.notes-preview em{font-style:italic}
+.md-toolbar{display:flex;align-items:center;gap:2px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
+.md-btn{background:none;border:1px solid transparent;color:var(--vscode-descriptionForeground);cursor:pointer;padding:2px 7px;font-size:11px;border-radius:2px;font-family:inherit;line-height:1.4;flex-shrink:0}
+.md-btn:hover{background:var(--vscode-list-hoverBackground);color:var(--vscode-foreground);border-color:var(--vscode-panel-border)}
+.md-toolbar-sep{width:1px;height:14px;background:var(--vscode-panel-border);margin:0 3px;flex-shrink:0}
+.md-link-bar{display:flex;align-items:center;gap:4px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
+.md-link-input{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));padding:2px 5px;font-size:11px;border-radius:2px;outline:none;font-family:inherit}
+.md-link-input:focus{border-color:var(--vscode-focusBorder)}
+.export-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:center;justify-content:center}
+.export-dialog{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:4px;width:700px;max-width:90vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.export-dialog-hdr{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
+.export-dialog-title{font-size:12px;font-weight:700;flex:1}
+.export-char-count{font-size:11px;color:var(--vscode-descriptionForeground);white-space:nowrap}
+.export-area{flex:1;resize:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:none;padding:10px 12px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.6;min-height:320px;outline:none}
 </style>
 </head>
 <body>
@@ -482,6 +572,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
   <h2>${caseId} &mdash; <span id="case-title" contenteditable="true" spellcheck="false">${title}</span></h2>
   <div class="header-right">
     <div class="bridge"><div class="dot" id="dot"></div><span id="bridge-lbl">Disconnected</span></div>
+    <button class="btn" id="export-jira-btn" title="Export case as JIRA comment">Export to JIRA</button>
     <button class="btn" id="resolve-btn">Resolve</button>
   </div>
 </div>
@@ -510,9 +601,23 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
     <div class="col-header" draggable="true" data-col="notes">
       <span>Notes<span class="col-drag-hint">drag to reorder</span></span>
       <span class="save-indicator" id="save-indicator">Saved</span>
+      <button class="preview-btn" id="preview-btn" title="Toggle markdown preview">Preview</button>
       <button class="collapse-btn" data-collapse="notes" title="Collapse">&#x2039;</button>
     </div>
+    <div class="md-toolbar" id="md-toolbar">
+      <button class="md-btn" data-wrap="**" title="Bold" style="font-weight:700">B</button>
+      <button class="md-btn" data-wrap="*" title="Italic" style="font-style:italic">I</button>
+      <button class="md-btn" data-wrap="u" title="Underline" style="text-decoration:underline">U</button>
+      <div class="md-toolbar-sep"></div>
+      <button class="md-btn md-link-btn" title="Insert link">Link</button>
+    </div>
+    <div class="md-link-bar" id="md-link-bar" style="display:none">
+      <input class="md-link-input" id="md-link-input" placeholder="https://" autocomplete="off" spellcheck="false">
+      <button class="btn" id="md-link-ok" style="font-size:10px;padding:2px 8px">Insert</button>
+      <button class="btn" id="md-link-cancel" style="font-size:10px;padding:2px 8px">&#x2715;</button>
+    </div>
     <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here&#x2026;&#10;&#10;What did you observe? What have you tried? What&#x27;s the current hypothesis?"></textarea>
+    <div class="notes-preview" id="notes-preview"></div>
   </div>
   <div class="resize-handle" id="handle-1"></div>
   <div class="col viewer" id="col-viewer">
@@ -526,6 +631,19 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
   </div>
 </div>
 
+
+<!-- JIRA Export modal -->
+<div class="export-modal" id="export-modal" style="display:none">
+  <div class="export-dialog">
+    <div class="export-dialog-hdr">
+      <span class="export-dialog-title">JIRA Export</span>
+      <span class="export-char-count" id="export-char-count"></span>
+      <button class="btn" id="export-copy-btn" style="font-size:11px">Copy</button>
+      <button class="btn" id="export-close-btn" style="font-size:11px">&#x2715;</button>
+    </div>
+    <textarea class="export-area" id="export-area" readonly spellcheck="false"></textarea>
+  </div>
+</div>
 
 <!-- Context menu for evidence items -->
 <div class="ctx-menu" id="ctx-menu">
@@ -737,9 +855,31 @@ window.addEventListener('message', function(evt) {
   else if (m.type === 'evidenceAdded') addEvidence(m.item);
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
   else if (m.type === 'groupRemoved') removeGroup(m.group);
+  else if (m.type === 'jiraExport') {
+    var ea = document.getElementById('export-area');
+    var em = document.getElementById('export-modal');
+    var ec = document.getElementById('export-char-count');
+    ea.value = m.text;
+    if (ec) ec.textContent = m.text.length + ' / 32,767 chars';
+    em.style.display = 'flex';
+    if (m.newNotes !== undefined) {
+      var ta2 = document.getElementById('notes-area');
+      ta2.value = m.newNotes;
+      if (previewMode) { document.getElementById('notes-preview').innerHTML = renderMd(m.newNotes); }
+    }
+    if (m.newEvidence && m.newEvidence.length) m.newEvidence.forEach(addEvidence);
+  }
   else if (m.type === 'findings') renderFindings(m.findings);
   else if (m.type === 'bridgeStatus') setBridge(m.connected);
   else if (m.type === 'evidenceView') renderViewerContent(m.paneId, m.id, m.name, m.content, m.contentType);
+  else if (m.type === 'previewImageLoaded') {
+    var pvImgs = document.getElementById('notes-preview').querySelectorAll('img.preview-img');
+    for (var pvi = 0; pvi < pvImgs.length; pvi++) {
+      if (pvImgs[pvi].getAttribute('data-preview-src') === m.src) {
+        pvImgs[pvi].src = m.dataUri;
+      }
+    }
+  }
 });
 
 function doSaveNotes() {
@@ -802,6 +942,98 @@ function fallbackCopy(text) {
   try { document.execCommand('copy'); } catch(err) {}
   document.body.removeChild(tmp);
 }
+
+// -- Export to JIRA modal ------------------------------------------------------
+document.getElementById('export-jira-btn').addEventListener('click', function() {
+  send('exportJira', { notes: document.getElementById('notes-area').value });
+});
+
+document.getElementById('export-copy-btn').addEventListener('click', function() {
+  var text = document.getElementById('export-area').value;
+  var btn = this;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
+  } else { fallbackCopy(text); }
+  btn.textContent = 'Copied!';
+  setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+});
+
+document.getElementById('export-close-btn').addEventListener('click', function() {
+  document.getElementById('export-modal').style.display = 'none';
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('export-modal').style.display !== 'none') {
+    document.getElementById('export-modal').style.display = 'none';
+  }
+});
+
+// -- MD syntax toolbar ---------------------------------------------------------
+var mdLinkSelStart = 0;
+var mdLinkSelEnd = 0;
+
+function mdWrap(before, after) {
+  var ta = document.getElementById('notes-area');
+  var start = ta.selectionStart;
+  var end = ta.selectionEnd;
+  var sel = ta.value.slice(start, end);
+  var replacement = before + sel + (after !== undefined ? after : before);
+  ta.value = ta.value.slice(0, start) + replacement + ta.value.slice(end);
+  if (sel.length === 0) {
+    ta.selectionStart = ta.selectionEnd = start + before.length;
+  } else {
+    ta.selectionStart = start;
+    ta.selectionEnd = start + replacement.length;
+  }
+  ta.focus();
+  ta.dispatchEvent(new Event('input'));
+}
+
+function insertLink() {
+  var url = document.getElementById('md-link-input').value.trim();
+  closeLinkBar();
+  if (!url) return;
+  var ta = document.getElementById('notes-area');
+  var sel = ta.value.slice(mdLinkSelStart, mdLinkSelEnd) || 'link text';
+  var replacement = '[' + sel + '](' + url + ')';
+  ta.value = ta.value.slice(0, mdLinkSelStart) + replacement + ta.value.slice(mdLinkSelEnd);
+  ta.selectionStart = mdLinkSelStart;
+  ta.selectionEnd = mdLinkSelStart + replacement.length;
+  ta.focus();
+  ta.dispatchEvent(new Event('input'));
+}
+
+function closeLinkBar() {
+  document.getElementById('md-link-bar').style.display = 'none';
+  document.getElementById('notes-area').focus();
+}
+
+document.getElementById('md-toolbar').addEventListener('click', function(e) {
+  var btn = e.target.closest('.md-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  var ta = document.getElementById('notes-area');
+  if (btn.classList.contains('md-link-btn')) {
+    mdLinkSelStart = ta.selectionStart;
+    mdLinkSelEnd   = ta.selectionEnd;
+    var bar = document.getElementById('md-link-bar');
+    bar.style.display = 'flex';
+    var inp = document.getElementById('md-link-input');
+    inp.value = '';
+    inp.focus();
+    return;
+  }
+  var wrap = btn.dataset.wrap;
+  if (wrap === 'u')  { mdWrap('<u>', '</u>'); }
+  else if (wrap)     { mdWrap(wrap); }
+});
+
+document.getElementById('md-link-ok').addEventListener('click', insertLink);
+document.getElementById('md-link-cancel').addEventListener('click', closeLinkBar);
+document.getElementById('md-link-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter')  { e.preventDefault(); insertLink(); }
+  if (e.key === 'Escape') { closeLinkBar(); }
+});
 
 // -- Notes drag-drop from evidence list ----------------------------------------
 var notesArea = document.getElementById('notes-area');
@@ -1217,6 +1449,213 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function escAttr(s){return String(s).replace(/'/g,'&#39;').replace(/"/g,'&quot;');}
 function noop(){}
 
+// -- Markdown renderer ---------------------------------------------------------
+
+// Finds the closing ) of a markdown link/image href, correctly handling nested parens.
+function findLinkEnd(text, start) {
+  var depth = 0;
+  for (var j = start; j < text.length; j++) {
+    var ch = text[j];
+    if (ch === '(') { depth++; }
+    else if (ch === ')') {
+      if (depth === 0) return j;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+function inlineRender(text) {
+  var out = '';
+  var i = 0;
+  while (i < text.length) {
+    var c = text[i];
+    if (c === '&') { out += '&amp;'; i++; continue; }
+    if (c === '<') { out += '&lt;'; i++; continue; }
+    if (c === '>') { out += '&gt;'; i++; continue; }
+
+    // Inline code  (\` inside template literal = backtick in output)
+    if (c === '\`') {
+      var e1 = text.indexOf('\`', i + 1);
+      if (e1 === -1) { out += '\`'; i++; continue; }
+      out += '<code>' + esc(text.slice(i + 1, e1)) + '</code>';
+      i = e1 + 1; continue;
+    }
+
+    // Bold+italic ***
+    if (c === '*' && text[i+1] === '*' && text[i+2] === '*') {
+      var e2 = text.indexOf('***', i + 3);
+      if (e2 === -1) { out += '*'; i++; continue; }
+      out += '<strong><em>' + esc(text.slice(i + 3, e2)) + '</em></strong>';
+      i = e2 + 3; continue;
+    }
+    // Bold **
+    if (c === '*' && text[i+1] === '*') {
+      var e3 = text.indexOf('**', i + 2);
+      if (e3 === -1) { out += '*'; i++; continue; }
+      out += '<strong>' + esc(text.slice(i + 2, e3)) + '</strong>';
+      i = e3 + 2; continue;
+    }
+    // Italic *
+    if (c === '*') {
+      var e4 = text.indexOf('*', i + 1);
+      if (e4 === -1) { out += '*'; i++; continue; }
+      out += '<em>' + esc(text.slice(i + 1, e4)) + '</em>';
+      i = e4 + 1; continue;
+    }
+
+    // Image ![alt](src)
+    if (c === '!' && text[i+1] === '[') {
+      var imgBEnd = text.indexOf(']', i + 2);
+      if (imgBEnd !== -1 && text[imgBEnd + 1] === '(') {
+        var imgPEnd = findLinkEnd(text, imgBEnd + 2);
+        if (imgPEnd !== -1) {
+          var imgAlt = text.slice(i + 2, imgBEnd);
+          var imgSrc = text.slice(imgBEnd + 2, imgPEnd);
+          out += '<img src="" data-preview-src="' + escAttr(imgSrc) + '" alt="' + esc(imgAlt) + '" class="preview-img">';
+          i = imgPEnd + 1; continue;
+        }
+      }
+      out += '!'; i++; continue;
+    }
+
+    // Link [label](href) - renders as inline image when href is an image file
+    if (c === '[') {
+      var bEnd = text.indexOf(']', i + 1);
+      if (bEnd !== -1 && text[bEnd + 1] === '(') {
+        var pEnd = findLinkEnd(text, bEnd + 2);
+        if (pEnd !== -1) {
+          var linkHref = text.slice(bEnd + 2, pEnd);
+          var linkLabel = text.slice(i + 1, bEnd);
+          var lh = linkHref.toLowerCase();
+          if (lh.endsWith('.png') || lh.endsWith('.jpg') || lh.endsWith('.jpeg') || lh.endsWith('.gif') || lh.endsWith('.webp')) {
+            out += '<img src="" data-preview-src="' + escAttr(linkHref) + '" alt="' + esc(linkLabel) + '" class="preview-img">';
+          } else {
+            out += '<a href="' + esc(linkHref) + '">' + esc(linkLabel) + '</a>';
+          }
+          i = pEnd + 1; continue;
+        }
+      }
+      out += '['; i++; continue;
+    }
+
+    out += c; i++;
+  }
+  return out;
+}
+
+function renderMd(src) {
+  var lines = src.split('\\n');
+  var out = '';
+  var inFence = false;
+  var inUl = false;
+  var inOl = false;
+
+  function closeList() {
+    if (inUl) { out += '</ul>'; inUl = false; }
+    if (inOl) { out += '</ol>'; inOl = false; }
+  }
+
+  for (var li = 0; li < lines.length; li++) {
+    var line = lines[li];
+    var trimmed = line.trim();
+
+    // Code fence (\`\`\` = three backticks in output)
+    if (line.slice(0, 3) === '\`\`\`') {
+      closeList();
+      if (inFence) { out += '</code></pre>'; inFence = false; }
+      else { out += '<pre><code>'; inFence = true; }
+      continue;
+    }
+    if (inFence) { out += esc(line) + '\\n'; continue; }
+
+    // Heading: count leading '#' chars followed by space
+    var hLv = 0;
+    while (hLv < 6 && line[hLv] === '#') hLv++;
+    if (hLv > 0 && line[hLv] === ' ') {
+      closeList();
+      out += '<h' + hLv + '>' + inlineRender(line.slice(hLv + 1)) + '</h' + hLv + '>';
+      continue;
+    }
+
+    // Horizontal rule
+    if (trimmed === '---' || trimmed === '***') {
+      closeList(); out += '<hr>'; continue;
+    }
+
+    // Unordered list: '- ' or '* '
+    if (line.slice(0, 2) === '- ' || line.slice(0, 2) === '* ') {
+      if (inOl) { out += '</ol>'; inOl = false; }
+      if (!inUl) { out += '<ul>'; inUl = true; }
+      out += '<li>' + inlineRender(line.slice(2)) + '</li>';
+      continue;
+    }
+
+    // Ordered list: digit(s) + '. '
+    var d = 0;
+    while (d < line.length && line[d] >= '0' && line[d] <= '9') d++;
+    if (d > 0 && line[d] === '.' && line[d + 1] === ' ') {
+      if (inUl) { out += '</ul>'; inUl = false; }
+      if (!inOl) { out += '<ol>'; inOl = true; }
+      out += '<li>' + inlineRender(line.slice(d + 2)) + '</li>';
+      continue;
+    }
+
+    // Blank line
+    if (trimmed === '') { closeList(); out += '<p></p>'; continue; }
+
+    // Paragraph
+    closeList();
+    out += '<p>' + inlineRender(line) + '</p>';
+  }
+
+  closeList();
+  if (inFence) out += '</code></pre>';
+  return out;
+}
+
+// -- Markdown preview toggle ---------------------------------------------------
+var previewMode = false;
+
+function togglePreview() {
+  previewMode = !previewMode;
+  var ta  = document.getElementById('notes-area');
+  var pv  = document.getElementById('notes-preview');
+  var btn = document.getElementById('preview-btn');
+  var tb  = document.getElementById('md-toolbar');
+  var lb  = document.getElementById('md-link-bar');
+  if (previewMode) {
+    pv.innerHTML = renderMd(ta.value);
+    var pvImgEls = pv.querySelectorAll('img.preview-img');
+    for (var pvii = 0; pvii < pvImgEls.length; pvii++) {
+      var pvSrc = pvImgEls[pvii].getAttribute('data-preview-src');
+      if (pvSrc) send('loadPreviewImage', { src: pvSrc });
+    }
+    ta.style.display = 'none';
+    pv.style.display = 'block';
+    if (tb) tb.style.display = 'none';
+    if (lb) lb.style.display = 'none';
+    btn.textContent = 'Edit';
+    btn.classList.add('active');
+  } else {
+    ta.style.display = '';
+    pv.style.display = 'none';
+    if (tb) tb.style.display = '';
+    btn.textContent = 'Preview';
+    btn.classList.remove('active');
+  }
+}
+
+document.getElementById('preview-btn').addEventListener('click', function(e) {
+  e.stopPropagation();
+  togglePreview();
+});
+
+// Prevent link navigation in preview (links are for visual reference only)
+document.getElementById('notes-preview').addEventListener('click', function(e) {
+  if (e.target && e.target.closest && e.target.closest('a')) e.preventDefault();
+});
+
 // Event delegation for dynamically-generated card actions in analysis body
 document.getElementById('analysis-body').addEventListener('click', function(e) {
   var target = e.target;
@@ -1265,4 +1704,89 @@ send('ready');
 </body>
 </html>`;
   }
+}
+
+// ── JIRA export helpers ────────────────────────────────────────────────────────
+
+import type { CaseSession } from '../services/case-manager';
+
+/** Returns the set of basenames referenced via relative markdown links in the notes. */
+function getReferencedFilenames(notes: string): Set<string> {
+  const refs = new Set<string>();
+  const re = /\]\(\.[/\\]([^)]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(notes)) !== null) {
+    refs.add(path.basename(m[1]));
+  }
+  return refs;
+}
+
+function buildJiraExport(session: CaseSession, notes: string): string {
+  const { meta, findings } = session;
+  const MAX = 32767;
+  const lines: string[] = [];
+
+  lines.push(`h2. [${meta.id}] ${meta.title}`, '');
+  lines.push(
+    `*Status:* ${meta.status.toUpperCase()} | ` +
+    `*Created:* ${meta.createdAt.toISOString().slice(0, 10)} | ` +
+    `*Updated:* ${meta.updatedAt.toISOString().slice(0, 10)}`,
+    ''
+  );
+
+  if (meta.status === 'resolved' && meta.resolution) {
+    lines.push('h3. Resolution', '', meta.resolution, '');
+  }
+
+  if (findings.length > 0) {
+    lines.push('h3. Analysis Findings', '');
+    lines.push('|| Severity || Finding || Evidence ||');
+    for (const f of findings) {
+      const evStr = (f.evidence ?? []).slice(0, 2).join('; ');
+      lines.push(`| ${f.confidence.toUpperCase()} | ${f.signatureName} | ${evStr} |`);
+    }
+    lines.push('');
+  }
+
+  const referencedNames = getReferencedFilenames(notes);
+  const evidenceToExport = meta.evidence.filter(ev => {
+    const name = ev.filePath ? path.basename(ev.filePath) : ev.source;
+    return referencedNames.has(name) || referencedNames.has(ev.source);
+  });
+  if (evidenceToExport.length > 0) {
+    lines.push('h3. Evidence', '');
+    for (const ev of evidenceToExport) {
+      const name = ev.filePath ? path.basename(ev.filePath) : ev.source;
+      lines.push(`* [${ev.type.toUpperCase()}] ${name}`);
+    }
+    lines.push('');
+  }
+
+  const jiraNotes = convertToJiraMarkup(notes);
+  if (jiraNotes.trim()) {
+    lines.push('h3. Investigation Notes', '', jiraNotes);
+  }
+
+  let result = lines.join('\n');
+  if (result.length > MAX) {
+    result = result.slice(0, MAX - 22) + '\n\n_[content truncated]_';
+  }
+  return result;
+}
+
+function convertToJiraMarkup(md: string): string {
+  return md
+    .replace(/^######\s+(.+)$/gm, 'h6. $1')
+    .replace(/^#####\s+(.+)$/gm,  'h5. $1')
+    .replace(/^####\s+(.+)$/gm,   'h4. $1')
+    .replace(/^###\s+(.+)$/gm,    'h3. $1')
+    .replace(/^##\s+(.+)$/gm,     'h2. $1')
+    .replace(/^#\s+(.+)$/gm,      'h1. $1')
+    .replace(/\*\*\*(.+?)\*\*\*/g, '*_$1_*')
+    .replace(/\*\*(.+?)\*\*/g,    '*$1*')
+    .replace(/__(.+?)__/g,        '*$1*')
+    .replace(/\*(.+?)\*/g,        '_$1_')
+    .replace(/`(.+?)`/g,          '{{$1}}')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '[$1|$2]')
+    .replace(/^---+$/gm,          '----');
 }
