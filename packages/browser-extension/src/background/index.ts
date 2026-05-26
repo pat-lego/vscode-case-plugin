@@ -113,7 +113,7 @@ function scheduleReconnect() {
   // that fires as soon as Chrome allows (typically ~30s minimum).
   if (!isContextValid()) return;
   chrome.alarms.create('reconnect', { delayInMinutes: 0.1 });
-  log('reconnect alarm scheduled');
+  log('DEBUG', 'reconnect alarm scheduled');
 }
 
 function startPing() {
@@ -140,7 +140,7 @@ function sendToContentScript(
       return;
     }
     // Content script not loaded (e.g. tab predates extension load) — inject now.
-    log('content script not found, injecting into tab', tabId);
+    log('DEBUG', 'injecting content script', { tabId });
     chrome.scripting.executeScript(
       { target: { tabId }, files: ['dist/content/index.js'] },
       () => {
@@ -164,7 +164,7 @@ function notifyPopup(msg: object) {
 chrome.alarms.create('keepAlive', { periodInMinutes: 1/3 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!isContextValid()) return;
-  log('alarm fired:', alarm.name);
+  log('DEBUG', 'alarm fired', { name: alarm.name });
   if (alarm.name === 'keepAlive' || alarm.name === 'reconnect') {
     connect();
   }
@@ -179,6 +179,7 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
 
   if (msg.type === 'sendCapture') {
     const outbound = msg.payload as OutboundMessage;
+    log('INFO', 'sendCapture', { name: outbound.name ?? null, type: outbound.type, source: outbound.source ?? null, contentLen: (outbound.content ?? '').length });
     getState().then(async state => {
       try {
         const res = await fetch(`http://127.0.0.1:${state.port}/capture`, {
@@ -189,12 +190,15 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
         const data = await res.json() as { ok: boolean; error?: string };
         if (data.ok) {
           await setState({ captureCount: state.captureCount + 1 });
+          log('INFO', 'sendCapture success', { name: outbound.name ?? null, captureCount: state.captureCount + 1 });
           notifyPopup({ type: 'stateChanged' });
           sendResponse({ ok: true });
         } else {
+          log('WARN', 'sendCapture rejected by bridge', { error: data.error ?? 'unknown', name: outbound.name ?? null });
           sendResponse({ ok: false, error: data.error ?? 'Capture failed' });
         }
       } catch (e) {
+        log('ERROR', 'sendCapture failed — bridge unreachable', { error: String(e) });
         sendResponse({ ok: false, error: 'Could not reach VS Code bridge' });
       }
     });
@@ -237,6 +241,7 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
           data: dataUrl,
           timestamp: now.toISOString()
         };
+        log('INFO', 'captureScreenshot', { name: payload.name, tab: tab.url ?? null });
         getState().then(async state => {
           try {
             const res = await fetch(`http://127.0.0.1:${state.port}/capture`, {
@@ -247,6 +252,7 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
             const data = await res.json() as { ok: boolean; error?: string };
             if (data.ok) {
               await setState({ captureCount: state.captureCount + 1 });
+              log('INFO', 'captureScreenshot success', { name: payload.name });
               notifyPopup({ type: 'stateChanged' });
               sendResponse({ ok: true });
             } else {

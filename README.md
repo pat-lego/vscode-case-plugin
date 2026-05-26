@@ -646,3 +646,81 @@ The key constraint: only primitive scalar fields (`number`, `string`) are resolv
 **Sharing signatures with the team:**
 
 Signatures in the Obsidian vault (`signatures/` folder) are synced via OneDrive. When you save a signature from the Signature Builder, it writes to `investigator.signaturesPath` which should point to the vault's `signatures/` folder. Other engineers pick up the new file on their next VS Code reload or by clicking **Reload Signatures** in the sidebar.
+
+---
+
+## Debugging and logging
+
+### VS Code extension logs
+
+All extension activity is written to the **Incident Investigator** output channel. Open it via:
+
+```
+View → Output → select "Incident Investigator" from the dropdown
+```
+
+Log format:
+```
+[HH:mm:ss.SSS] [LEVEL] [component] message  {"context":"json"}
+```
+
+Components and what they log:
+
+| Component | What it covers |
+|---|---|
+| `extension` | Activation, active-case changes |
+| `case-mgr` | Case create/read/update/delete, disk reads and writes, active-case transitions |
+| `analysis` | Evidence type detection, thread dump parsing, signal extraction, signature matching, per-finding results |
+| `bridge` | Bridge server start, WebSocket connections and disconnections, every capture (HTTP and WS) |
+
+Log levels:
+- `INFO ` — key state transitions (case created, evidence added, finding matched, client connected)
+- `DEBUG` — fine-grained data flow (signals summary, per-condition evaluation, save path chosen)
+- `WARN ` — recoverable issues (disk write failed, capture rejected)
+- `ERROR` — unrecoverable failures (also written to the developer console)
+
+**Tip:** filter the output by component — e.g. type `case-mgr` in the output channel filter box to see only case persistence events.
+
+### Browser extension logs
+
+Open Chrome DevTools on the background service worker:
+
+```
+chrome://extensions → Incident Investigator → "Inspect views: service worker"
+```
+
+All background activity is logged to the service worker's console with prefix `[II-bg]`:
+```
+[HH:mm:ss.SSS] [LEVEL] [II-bg] message {"context":"json"}
+```
+
+Key events logged:
+- `WebSocket connected / closed` — bridge connectivity
+- `active case stored / cleared` — when the active case changes
+- `sendCapture` — every capture attempt with payload size and result
+- `captureScreenshot` — screenshot captures
+- `alarm fired` — keep-alive and reconnect alarms
+
+Content script logs (logged from each tab that has the extension loaded) use prefix `[II-content]`:
+```
+chrome://extensions → Incident Investigator → click the "Inspect" link for a specific tab
+```
+Or open the regular DevTools (`F12`) on the page you captured from.
+
+Content script events: adapter selection, content extraction size, and send result.
+
+### Correlating logs across components
+
+To trace a single capture end-to-end:
+
+1. In the browser console, find the `sendCapture` log line — note the `name` field (e.g. `splunk-14h32.log`)
+2. In VS Code output, find `POST /capture` with the same `name`
+3. Below that, find `processEvidence` and `parsed thread dump` (if it was a thread dump)
+4. Then `signals summary` — this shows the computed values the signatures evaluated against
+5. Then one `finding` line per matched signature (with confidence score)
+6. Finally `processEvidence done` with the total finding count
+
+If a capture is not appearing in VS Code:
+- Check the browser console for `sendCapture failed — bridge unreachable` (VS Code bridge is not running)
+- Check the VS Code output for `POST /capture` with an error
+- Check `case-mgr` for `save skipped` with `reason: readonly` (the case may have been loaded read-only)

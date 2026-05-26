@@ -7,6 +7,11 @@ if ((window as Record<string, unknown>)['__ii_loaded']) {
 }
 (window as Record<string, unknown>)['__ii_loaded'] = true;
 
+function log(msg: string, ctx?: Record<string, unknown>) {
+  const ctxStr = ctx && Object.keys(ctx).length > 0 ? ' ' + JSON.stringify(ctx) : '';
+  console.log(`[II-content] ${msg}${ctxStr}`);
+}
+
 function injectButton() {
   if (document.getElementById('ii-capture-btn')) return;
 
@@ -43,8 +48,10 @@ function injectButton() {
 }
 
 async function capture(): Promise<boolean> {
+  log('capture triggered', { url: location.href, adapter: splunk.matches() ? 'splunk' : 'generic' });
   const result = splunk.matches() ? splunk.extract() : generic.extract();
   if (!result) return false;
+  log('adapter extracted', { name: result.name, contentLen: result.content.length, mimeType: result.mimeType });
 
   return new Promise(resolve => {
     chrome.runtime.sendMessage(
@@ -59,18 +66,23 @@ async function capture(): Promise<boolean> {
           timestamp: new Date().toISOString()
         }
       },
-      (res: { ok: boolean }) => resolve(res?.ok ?? false)
+      (res: { ok: boolean }) => {
+        log('capture sent', { ok: res?.ok ?? false, name: result.name });
+        resolve(res?.ok ?? false);
+      }
     );
   });
 }
 
 chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sendResponse) => {
   if (msg.type === 'triggerCapture') {
+    log('triggerCapture message received');
     capture().then(ok => sendResponse({ ok }));
     return true;
   }
 
   if (msg.type === 'triggerSelectionCapture') {
+    log('triggerSelectionCapture', { selectionLen: window.getSelection()?.toString().trim().length ?? 0 });
     const selection = window.getSelection()?.toString().trim() ?? '';
     if (selection.length < 10) {
       sendResponse({ ok: false, error: 'Nothing selected' });
