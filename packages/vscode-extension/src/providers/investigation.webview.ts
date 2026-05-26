@@ -307,6 +307,32 @@ export class InvestigationWebview {
         vscode.commands.executeCommand('investigator.reviewEvidenceWithAI', caseId, String(msg.id ?? ''));
         break;
 
+      case 'dropEvidence': {
+        const caseDir = this.caseManager.getCaseDir(caseId);
+        let dropPath: string | undefined;
+        if (msg.filePath) {
+          dropPath = String(msg.filePath);
+        } else if (msg.uri) {
+          try { dropPath = vscode.Uri.parse(String(msg.uri)).fsPath; } catch { /* invalid URI */ }
+        }
+        if (!dropPath) return;
+        try { fs.statSync(dropPath); } catch {
+          vscode.window.showErrorMessage(`Cannot access dropped file: ${path.basename(dropPath)}`);
+          return;
+        }
+        const dropStat = fs.statSync(dropPath);
+        if (dropStat.isDirectory()) {
+          this.addFolderEvidence(caseId, dropPath, caseDir, panel);
+        } else {
+          const added = this.addFileEvidence(caseId, dropPath, caseDir);
+          if (added) {
+            panel.webview.postMessage({ type: 'evidenceAdded', item: added.item });
+            if (added.findings?.length) panel.webview.postMessage({ type: 'findings', findings: added.findings });
+          }
+        }
+        break;
+      }
+
       case 'loadPreviewImage': {
         const session = this.caseManager.getSession(caseId);
         if (!session || !session.casePath) break;
@@ -501,6 +527,8 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .save-indicator.show{opacity:1}
 .add-btn{display:flex;align-items:center;justify-content:center;gap:5px;padding:7px;border:1px dashed var(--vscode-panel-border);border-radius:3px;font-size:11px;color:var(--vscode-descriptionForeground);cursor:pointer;background:none;width:100%;margin-bottom:6px}
 .add-btn:hover{border-color:var(--vscode-focusBorder);color:var(--vscode-foreground)}
+.ev-drop-active{outline:2px dashed var(--vscode-focusBorder);outline-offset:-3px}
+.ev-drop-active .col-body{background:var(--vscode-list-hoverBackground)}
 .ev-item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:3px;font-size:11px;cursor:pointer}
 .ev-item:hover{background:var(--vscode-list-hoverBackground)}
 .ev-item.active{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground)}
@@ -1897,6 +1925,55 @@ document.getElementById('resolve-btn').addEventListener('click', function() {
 });
 document.getElementById('analysis-toggle').addEventListener('click', function() { toggleAnalysis(); });
 
+// -- Evidence drag-and-drop from OS file system --------------------------------
+(function() {
+  var evCol = document.getElementById('col-evidence');
+
+  evCol.addEventListener('dragover', function(e) {
+    var hasFiles = false;
+    for (var i = 0; i < e.dataTransfer.types.length; i++) {
+      if (e.dataTransfer.types[i] === 'Files') { hasFiles = true; break; }
+    }
+    if (!hasFiles) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    evCol.classList.add('ev-drop-active');
+  });
+
+  evCol.addEventListener('dragleave', function(e) {
+    if (evCol.contains(e.relatedTarget)) return;
+    evCol.classList.remove('ev-drop-active');
+  });
+
+  evCol.addEventListener('drop', function(e) {
+    evCol.classList.remove('ev-drop-active');
+    var files = e.dataTransfer ? e.dataTransfer.files : null;
+    if (!files || files.length === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var file = files[0];
+    // Electron exposes a non-standard .path property with the OS filesystem path
+    var fp = file.path || null;
+    if (fp) {
+      send('dropEvidence', { filePath: fp });
+      return;
+    }
+    // Fallback: parse text/uri-list (file:///... URIs)
+    var uriList = e.dataTransfer.getData('text/uri-list');
+    if (uriList) {
+      var lines = uriList.split('\\n');
+      for (var k = 0; k < lines.length; k++) {
+        var line = lines[k].trim();
+        if (line && line[0] !== '#') {
+          send('dropEvidence', { uri: line });
+          return;
+        }
+      }
+    }
+  });
+})();
+
 send('ready');
 </script>
 </body>
@@ -1919,57 +1996,20 @@ function getReferencedFilenames(notes: string): Set<string> {
   return refs;
 }
 
-function buildJiraExport(session: CaseSession, notes: string): string {
-  const { meta, findings } = session;
+function buildJiraExport(_session: CaseSession, notes: string): string {
   const MAX = 32767;
-  const lines: string[] = [];
-
-  lines.push(`h2. [${meta.id}] ${meta.title}`, '');
-  lines.push(
-    `*Status:* ${meta.status.toUpperCase()} | ` +
-    `*Created:* ${meta.createdAt.toISOString().slice(0, 10)} | ` +
-    `*Updated:* ${meta.updatedAt.toISOString().slice(0, 10)}`,
-    ''
-  );
-
-  if (meta.status === 'resolved' && meta.resolution) {
-    lines.push('h3. Resolution', '', meta.resolution, '');
-  }
-
-  if (findings.length > 0) {
-    lines.push('h3. Analysis Findings', '');
-    lines.push('|| Severity || Finding || Evidence ||');
-    for (const f of findings) {
-      const evStr = (f.evidence ?? []).slice(0, 2).join('; ');
-      lines.push(`| ${f.confidence.toUpperCase()} | ${f.signatureName} | ${evStr} |`);
-    }
-    lines.push('');
-  }
-
-  const referencedNames = getReferencedFilenames(notes);
-  const evidenceToExport = meta.evidence.filter(ev => {
-    const name = ev.filePath ? path.basename(ev.filePath) : ev.source;
-    return referencedNames.has(name) || referencedNames.has(ev.source);
-  });
-  if (evidenceToExport.length > 0) {
-    lines.push('h3. Evidence', '');
-    for (const ev of evidenceToExport) {
-      const name = ev.filePath ? path.basename(ev.filePath) : ev.source;
-      lines.push(`* [${ev.type.toUpperCase()}] ${name}`);
-    }
-    lines.push('');
-  }
-
-  const jiraNotes = convertToJiraMarkup(notes);
-  if (jiraNotes.trim()) {
-    lines.push('h3. Investigation Notes', '', jiraNotes);
-  }
-
-  let result = lines.join('\n');
+  let result = convertToJiraMarkup(notes);
   if (result.length > MAX) {
     result = result.slice(0, MAX - 22) + '\n\n_[content truncated]_';
   }
   return result;
+}
+
+const JIRA_IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg']);
+
+function localHrefToJira(href: string): string {
+  const base = path.basename(href.split('?')[0]);
+  return JIRA_IMAGE_EXTS.has(path.extname(base).toLowerCase()) ? `!${base}!` : `[^${base}]`;
 }
 
 function convertToJiraMarkup(md: string): string {
@@ -1985,6 +2025,11 @@ function convertToJiraMarkup(md: string): string {
     .replace(/__(.+?)__/g,        '*$1*')
     .replace(/\*(.+?)\*/g,        '_$1_')
     .replace(/`(.+?)`/g,          '{{$1}}')
+    // Markdown images: ![alt](./path) or ![alt](path) -> JIRA attachment macro
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, _alt, href) => localHrefToJira(href))
+    // Local relative links: [text](./path) or [text](../path) -> attachment macro
+    .replace(/\[([^\]]+)\]\((\.\.?\/[^)]+)\)/g, (_m, _text, href) => localHrefToJira(href))
+    // External links: [text](url) -> [text|url]
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '[$1|$2]')
     .replace(/^---+$/gm,          '----');
 }
