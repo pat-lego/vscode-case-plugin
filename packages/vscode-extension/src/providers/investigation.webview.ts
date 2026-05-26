@@ -246,7 +246,7 @@ export class InvestigationWebview {
             if (!text && ev.filePath) {
               try { text = fs.readFileSync(ev.filePath, 'utf-8'); } catch { text = undefined; }
             }
-            content = text ? text.slice(0, 200000) : null;
+            content = text ?? null;
           }
         }
         panel.webview.postMessage({ type: 'evidenceView', id: ev.id, name, paneId, content, contentType });
@@ -301,6 +301,10 @@ export class InvestigationWebview {
 
       case 'openSignatureBuilder':
         vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
+        break;
+
+      case 'reviewEvidenceWithAI':
+        vscode.commands.executeCommand('investigator.reviewEvidenceWithAI', caseId, String(msg.id ?? ''));
         break;
 
       case 'loadPreviewImage': {
@@ -362,7 +366,7 @@ export class InvestigationWebview {
     return { item: { id: item.id, name, type, timestamp: item.capturedAt.toISOString(), group } };
   }
 
-  private addFolderEvidence(caseId: string, folderPath: string, caseDir: string | undefined, panel: vscode.WebviewPanel) {
+  private addFolderEvidence(caseId: string, folderPath: string, caseDir: string | undefined, panel?: vscode.WebviewPanel) {
     const folderName = path.basename(folderPath);
     const walk = (dir: string, relDir: string) => {
       let entries: import('fs').Dirent[];
@@ -389,8 +393,8 @@ export class InvestigationWebview {
               const content = fs.readFileSync(srcPath, 'utf-8');
               const { evidenceItem, findings } = this.analysisService.processEvidence(caseId, entry.name, content, destPath);
               this.caseManager.setEvidenceGroup(caseId, evidenceItem.id, folderName);
-              panel.webview.postMessage({ type: 'evidenceAdded', item: { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString(), group: folderName } });
-              if (findings.length) panel.webview.postMessage({ type: 'findings', findings });
+              panel?.webview.postMessage({ type: 'evidenceAdded', item: { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString(), group: folderName } });
+              if (findings.length) panel?.webview.postMessage({ type: 'findings', findings });
             } catch {}
           } else {
             const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp']);
@@ -404,7 +408,7 @@ export class InvestigationWebview {
               group: folderName,
             };
             this.caseManager.addEvidence(caseId, item as import('@incident-investigator/core').EvidenceItem);
-            panel.webview.postMessage({ type: 'evidenceAdded', item: { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString(), group: folderName } });
+            panel?.webview.postMessage({ type: 'evidenceAdded', item: { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString(), group: folderName } });
           }
         }
       }
@@ -413,6 +417,51 @@ export class InvestigationWebview {
       try { fs.mkdirSync(path.join(caseDir, folderName), { recursive: true }); } catch {}
     }
     walk(folderPath, folderName);
+  }
+
+  /**
+   * Adds one or more file/folder URIs to an existing case as evidence.
+   * If the case panel is already open the webview is updated live; otherwise
+   * the evidence is persisted and will appear in initialState when the panel opens.
+   * Returns the number of top-level items processed.
+   */
+  async addUrisToCase(caseId: string, uris: vscode.Uri[]): Promise<number> {
+    const panel = this.panels.get(caseId);
+    const caseDir = this.caseManager.getCaseDir(caseId);
+
+    const filesByDir = new Map<string, string[]>();
+    const folderPaths: string[] = [];
+    for (const uri of uris) {
+      let stat: import('fs').Stats;
+      try { stat = fs.statSync(uri.fsPath); } catch { continue; }
+      if (stat.isDirectory()) {
+        folderPaths.push(uri.fsPath);
+      } else {
+        const dir = path.dirname(uri.fsPath);
+        if (!filesByDir.has(dir)) filesByDir.set(dir, []);
+        filesByDir.get(dir)!.push(uri.fsPath);
+      }
+    }
+
+    let added = 0;
+    for (const [, filePaths] of filesByDir) {
+      const group = filePaths.length >= 2 ? path.basename(path.dirname(filePaths[0])) : undefined;
+      for (const filePath of filePaths) {
+        const result = this.addFileEvidence(caseId, filePath, caseDir, group);
+        if (result) {
+          added++;
+          panel?.webview.postMessage({ type: 'evidenceAdded', item: result.item });
+          if (result.findings?.length) panel?.webview.postMessage({ type: 'findings', findings: result.findings });
+        }
+      }
+    }
+
+    for (const folderPath of folderPaths) {
+      this.addFolderEvidence(caseId, folderPath, caseDir, panel);
+      added++;
+    }
+
+    return added;
   }
 
   private buildHtml(caseId: string, title: string): string {
@@ -464,6 +513,12 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .ev-del{opacity:0;pointer-events:none;background:none;border:none;color:var(--vscode-descriptionForeground);cursor:pointer;padding:0 3px;font-size:14px;line-height:1;flex-shrink:0}
 .ev-del:hover{color:var(--vscode-errorForeground)}
 .ev-item:hover .ev-del{opacity:1;pointer-events:auto}
+.ev-check{flex-shrink:0;cursor:pointer;width:13px;height:13px;margin:0;accent-color:var(--vscode-focusBorder);opacity:0;pointer-events:none}
+.ev-item:hover .ev-check,.ev-item.selected .ev-check{opacity:1;pointer-events:auto}
+.ev-item.selected{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground)}
+.ev-select-bar{display:none;align-items:center;gap:5px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);font-size:11px;flex-shrink:0}
+.ev-select-bar.visible{display:flex}
+.global-search{display:flex;align-items:center;gap:4px;padding:4px 8px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background);flex-shrink:0}
 .ev-group{border:1px solid var(--vscode-panel-border);border-radius:3px;margin-bottom:4px;overflow:hidden}
 .ev-group-hdr{display:flex;align-items:center;gap:5px;padding:4px 6px;cursor:pointer;font-size:11px;user-select:none;background:var(--vscode-sideBar-background)}
 .ev-group-hdr:hover{background:var(--vscode-list-hoverBackground)}
@@ -522,6 +577,11 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 mark.search-match{background:#cca70033;color:inherit;border-radius:1px}
 mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .viewer-empty-state{display:flex;align-items:center;justify-content:center;flex:1;font-size:11px;color:var(--vscode-descriptionForeground);padding:40px 12px;text-align:center;line-height:1.8}
+.viewer-truncnote{font-size:10px;color:var(--vscode-descriptionForeground);padding:3px 8px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);text-align:center}
+.search-ctx-list{padding:0;margin:0}
+.search-ctx{border-bottom:1px solid var(--vscode-panel-border)}
+.search-ctx-hdr{font-size:10px;color:var(--vscode-descriptionForeground);padding:2px 8px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);user-select:none}
+.search-ctx-pre{margin:0;padding:4px 8px;white-space:pre-wrap;word-break:break-all;font-size:11px;font-family:var(--vscode-editor-font-family,monospace);line-height:1.5}
 .ctx-menu{display:none;position:fixed;background:var(--vscode-menu-background,#252526);border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:3px;z-index:9999;min-width:150px;overflow:hidden;box-shadow:2px 4px 12px rgba(0,0,0,.4)}
 .ctx-item{padding:6px 14px;font-size:12px;cursor:pointer;color:var(--vscode-menu-foreground,var(--vscode-foreground));user-select:none}
 .ctx-item:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
@@ -584,6 +644,11 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
       <button class="collapse-btn" data-collapse="evidence" title="Collapse">&#x2039;</button>
     </div>
     <div class="col-body">
+      <div class="ev-select-bar" id="ev-select-bar">
+        <span id="ev-select-count" style="flex:1;color:var(--vscode-descriptionForeground)"></span>
+        <button class="btn" id="ev-delete-selected" style="font-size:10px;padding:2px 6px">Delete</button>
+        <button class="btn" id="ev-select-clear" style="font-size:10px;padding:2px 6px">Clear</button>
+      </div>
       <button class="add-btn" id="add-evidence-btn">&#xff0b; Add evidence files</button>
       <div id="ev-list"></div>
       <div class="analysis-section" id="analysis-section">
@@ -625,6 +690,12 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
       <span>Viewer<span class="col-drag-hint">drag to reorder</span></span>
       <button class="collapse-btn" data-collapse="viewer" title="Collapse">&#x2039;</button>
     </div>
+    <div class="global-search" id="global-search">
+      <input class="pane-search-input" id="global-search-input" placeholder="Search all open viewers..." autocomplete="off" spellcheck="false">
+      <span class="pane-search-count" id="global-search-count"></span>
+      <button class="pane-search-nav" id="global-search-prev" title="Previous (Shift+Enter)">&#x2191;</button>
+      <button class="pane-search-nav" id="global-search-next" title="Next (Enter)">&#x2193;</button>
+    </div>
     <div class="viewer-body" id="viewer-body">
       <div class="viewer-empty-state" id="viewer-empty-state">Click an evidence item to open it here.<br>Each item opens in its own pane.</div>
     </div>
@@ -649,6 +720,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 <div class="ctx-menu" id="ctx-menu">
   <div class="ctx-item" id="ctx-open">Open in Editor &#x2197;</div>
   <div class="ctx-item" id="ctx-copy-ref">Copy reference</div>
+  <div class="ctx-item" id="ctx-ai-review">Send to AI for Review...</div>
   <div class="ctx-sep"></div>
   <div class="ctx-item ctx-danger" id="ctx-delete">Delete Evidence</div>
 </div>
@@ -667,6 +739,14 @@ let items = [];
 let saveTimer = null;
 var groupEls = {}; // groupName -> group container element
 var draggingEv = null; // set during evidence drag-and-drop
+var selectedEvIds = new Set();
+var globalMatchList = []; // [{paneId, markIdx}] - ordered across all open panes
+var globalMatchCur = 0;
+
+function debounce(fn, ms) {
+  var t;
+  return function() { clearTimeout(t); t = setTimeout(fn, ms); };
+}
 
 // -- Layout ------------------------------------------------------------
 const MIN_W = {evidence: 110, notes: 140, viewer: 200};
@@ -1090,11 +1170,20 @@ function addEvidence(item) {
   row.title = item.name;
   row.dataset.evId = item.id;
   row.innerHTML =
+    '<input type="checkbox" class="ev-check">'+
     '<span class="ev-type">'+(TYPE_SHORT[item.type]||'FILE')+'</span>'+
     '<span class="ev-name">'+esc(displayName)+'</span>'+
     '<span class="ev-time">'+fmt(t)+'</span>'+
     '<button class="ev-ext" title="Open in editor">&#x2197;</button>'+
     '<button class="ev-del" title="Remove">&#x2715;</button>';
+
+  var evCheck = row.querySelector('.ev-check');
+  evCheck.addEventListener('click', function(e) { e.stopPropagation(); });
+  evCheck.addEventListener('change', function() {
+    if (evCheck.checked) { selectedEvIds.add(item.id); row.classList.add('selected'); }
+    else { selectedEvIds.delete(item.id); row.classList.remove('selected'); }
+    updateEvSelectBar();
+  });
 
   row.querySelector('.ev-ext').addEventListener('click', function(e) {
     e.stopPropagation();
@@ -1106,7 +1195,7 @@ function addEvidence(item) {
   });
 
   row.addEventListener('click', function(e) {
-    if (e.target.classList.contains('ev-del') || e.target.classList.contains('ev-ext')) return;
+    if (e.target.classList.contains('ev-del') || e.target.classList.contains('ev-ext') || e.target.classList.contains('ev-check')) return;
     openInViewer(item.id, item.name);
   });
 
@@ -1173,7 +1262,7 @@ function openInViewer(evId, name) {
   });
 
   var searchInput = el.querySelector('.pane-search-input');
-  searchInput.addEventListener('input', function() { runPaneSearch(paneId); });
+  searchInput.addEventListener('input', debounce(function() { runPaneSearch(paneId); }, 300));
   searchInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') { e.preventDefault(); navPaneMatch(paneId, e.shiftKey ? -1 : 1); }
     if (e.key === 'Escape') { searchInput.value = ''; runPaneSearch(paneId); }
@@ -1235,52 +1324,75 @@ function renderViewerContent(paneId, evId, name, content, contentType) {
     if (searchEl) searchEl.classList.remove('visible');
   } else {
     paneRawText[paneId] = content;
-    contentEl.innerHTML = '<pre>'+esc(content)+'</pre>';
+    contentEl.innerHTML = '<pre>' + esc(content) + '</pre>';
     if (searchEl) searchEl.classList.add('visible');
   }
 }
 
-function runPaneSearch(paneId) {
-  var input     = document.getElementById('search-input-' + paneId);
+// Applies query to a single pane and returns total match count.
+// Pass noAutoFocus=true when driving from global search.
+function applyPaneQuery(paneId, query, noAutoFocus) {
   var countEl   = document.getElementById('search-count-' + paneId);
   var contentEl = document.getElementById('vcontent-' + paneId);
-  if (!input || !contentEl) return;
-  var query   = input.value;
+  if (!contentEl) return 0;
   var rawText = paneRawText[paneId];
-  if (rawText === undefined) return;
+  if (rawText === undefined) return 0;
 
   if (!query) {
     contentEl.innerHTML = '<pre>' + esc(rawText) + '</pre>';
     if (countEl) countEl.textContent = '';
-    return;
+    contentEl.dataset.matchIdx = '0';
+    return 0;
   }
 
-  // Build highlighted HTML by scanning the raw text for case-insensitive matches
   var lower  = rawText.toLowerCase();
   var lowerQ = query.toLowerCase();
+  var qLen   = lowerQ.length;
+  if (qLen === 0) return 0;
+
+  // Collect all match positions via indexOf (fast, no DOM writes)
+  var positions = [];
+  var p = lower.indexOf(lowerQ);
+  while (p !== -1) {
+    positions.push(p);
+    p = lower.indexOf(lowerQ, p + qLen);
+  }
+
+  if (positions.length === 0) {
+    contentEl.innerHTML = '<pre>' + esc(rawText) + '</pre>';
+    if (countEl) countEl.textContent = 'no results';
+    contentEl.dataset.matchIdx = '0';
+    return 0;
+  }
+
+  // Build full HTML with marks inserted at match positions
   var html = '';
   var i = 0;
-  var count = 0;
-  while (i <= rawText.length) {
-    var idx = lower.indexOf(lowerQ, i);
-    if (idx === -1) { html += esc(rawText.slice(i)); break; }
-    if (idx > i) html += esc(rawText.slice(i, idx));
-    html += '<mark class="search-match">' + esc(rawText.slice(idx, idx + query.length)) + '</mark>';
-    count++;
-    i = idx + query.length;
-    if (lowerQ.length === 0) break; // safety - empty query already handled above
+  for (var k = 0; k < positions.length; k++) {
+    var pos = positions[k];
+    if (pos > i) html += esc(rawText.slice(i, pos));
+    html += '<mark class="search-match">' + esc(rawText.slice(pos, pos + qLen)) + '</mark>';
+    i = pos + qLen;
   }
+  if (i < rawText.length) html += esc(rawText.slice(i));
   contentEl.innerHTML = '<pre>' + html + '</pre>';
   contentEl.dataset.matchIdx = '0';
 
-  var marks = contentEl.querySelectorAll('.search-match');
-  if (marks.length > 0) {
-    marks[0].classList.add('active-match');
-    marks[0].scrollIntoView({ block: 'nearest' });
-    if (countEl) countEl.textContent = '1 / ' + count;
-  } else {
-    if (countEl) countEl.textContent = 'no results';
+  if (countEl) countEl.textContent = noAutoFocus ? String(positions.length) : '1 / ' + positions.length;
+  if (!noAutoFocus) {
+    var marks = contentEl.querySelectorAll('.search-match');
+    if (marks.length > 0) {
+      marks[0].classList.add('active-match');
+      marks[0].scrollIntoView({ block: 'nearest' });
+    }
   }
+  return positions.length;
+}
+
+function runPaneSearch(paneId) {
+  var input = document.getElementById('search-input-' + paneId);
+  if (!input) return;
+  applyPaneQuery(paneId, input.value);
 }
 
 function navPaneMatch(paneId, dir) {
@@ -1299,6 +1411,8 @@ function navPaneMatch(paneId, dir) {
 }
 
 function removeEvidence(id) {
+  selectedEvIds.delete(id);
+  updateEvSelectBar();
   items = items.filter(function(i) { return i.id !== id; });
   var wrapper = document.querySelector('[data-ev-id="'+id+'"]');
   if (wrapper) {
@@ -1354,7 +1468,7 @@ document.addEventListener('contextmenu', function(e) {
   e.preventDefault();
   ctxEvId = evItem.dataset.evId;
   // Keep menu inside viewport
-  var menuW = 160, menuH = 80;
+  var menuW = 180, menuH = 110;
   var x = Math.min(e.clientX, window.innerWidth - menuW - 4);
   var y = Math.min(e.clientY, window.innerHeight - menuH - 4);
   ctxMenu.style.left = x + 'px';
@@ -1386,6 +1500,12 @@ document.getElementById('ctx-copy-ref').addEventListener('click', function(e) {
       }
     }
   }
+  hideCtxMenu();
+});
+
+document.getElementById('ctx-ai-review').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (ctxEvId) send('reviewEvidenceWithAI', { id: ctxEvId });
   hideCtxMenu();
 });
 
@@ -1688,6 +1808,84 @@ function updateStatusButton(status) {
     btn.dataset.caseStatus = 'open';
   }
 }
+
+// -- Multi-select delete -------------------------------------------------------
+function updateEvSelectBar() {
+  var bar = document.getElementById('ev-select-bar');
+  var cnt = document.getElementById('ev-select-count');
+  if (selectedEvIds.size > 0) {
+    bar.classList.add('visible');
+    cnt.textContent = selectedEvIds.size + ' selected';
+  } else {
+    bar.classList.remove('visible');
+    cnt.textContent = '';
+  }
+}
+
+document.getElementById('ev-delete-selected').addEventListener('click', function() {
+  var ids = Array.from(selectedEvIds);
+  selectedEvIds.clear();
+  updateEvSelectBar();
+  ids.forEach(function(id) { send('deleteEvidence', { id: id }); });
+});
+
+document.getElementById('ev-select-clear').addEventListener('click', function() {
+  selectedEvIds.clear();
+  document.querySelectorAll('.ev-check').forEach(function(cb) { cb.checked = false; });
+  document.querySelectorAll('.ev-item.selected').forEach(function(el) { el.classList.remove('selected'); });
+  updateEvSelectBar();
+});
+
+// -- Cross-pane global search --------------------------------------------------
+function runGlobalSearch() {
+  var query = document.getElementById('global-search-input').value;
+  var cnt = document.getElementById('global-search-count');
+  globalMatchList = [];
+  globalMatchCur = 0;
+  viewerPanes.forEach(function(p) {
+    var n = applyPaneQuery(p.paneId, query, true);
+    for (var k = 0; k < n; k++) { globalMatchList.push({ paneId: p.paneId, markIdx: k }); }
+  });
+  if (!query) { if (cnt) cnt.textContent = ''; return; }
+  if (globalMatchList.length > 0) {
+    focusGlobalMatch(0);
+  } else {
+    if (cnt) cnt.textContent = 'no results';
+  }
+}
+
+function focusGlobalMatch(idx) {
+  document.querySelectorAll('.search-match.active-match').forEach(function(el) { el.classList.remove('active-match'); });
+  if (globalMatchList.length === 0) return;
+  var match = globalMatchList[idx];
+  var contentEl = document.getElementById('vcontent-' + match.paneId);
+  if (!contentEl) return;
+  var marks = contentEl.querySelectorAll('.search-match');
+  var mark = marks[match.markIdx];
+  if (mark) {
+    mark.classList.add('active-match');
+    mark.scrollIntoView({ block: 'nearest' });
+  }
+  var cnt = document.getElementById('global-search-count');
+  if (cnt) cnt.textContent = (idx + 1) + ' / ' + globalMatchList.length;
+}
+
+function navGlobalMatch(dir) {
+  if (globalMatchList.length === 0) return;
+  globalMatchCur = (globalMatchCur + dir + globalMatchList.length) % globalMatchList.length;
+  focusGlobalMatch(globalMatchCur);
+}
+
+(function() {
+  var gi = document.getElementById('global-search-input');
+  gi.addEventListener('input', debounce(runGlobalSearch, 300));
+  gi.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); navGlobalMatch(e.shiftKey ? -1 : 1); }
+    if (e.key === 'Escape') { gi.value = ''; runGlobalSearch(); }
+  });
+  document.getElementById('global-search-prev').addEventListener('click', function() { navGlobalMatch(-1); });
+  document.getElementById('global-search-next').addEventListener('click', function() { navGlobalMatch(1); });
+})();
 
 document.getElementById('add-evidence-btn').addEventListener('click', function() { send('addEvidence'); });
 document.getElementById('resolve-btn').addEventListener('click', function() {

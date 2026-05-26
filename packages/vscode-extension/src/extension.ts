@@ -195,6 +195,89 @@ export function activate(context: vscode.ExtensionContext) {
       if (!sig) { vscode.window.showWarningMessage(`Signature "${item.sigId}" not found.`); return; }
       ManualSignatureBuilderPanel.show(context, sigService, sig);
     }),
+    vscode.commands.registerCommand('investigator.reviewEvidenceWithAI', async (caseId: string, evidenceId: string) => {
+      const session = caseManager.getSession(caseId);
+      if (!session) return;
+      const ev = session.meta.evidence.find(e => e.id === evidenceId);
+      if (!ev) return;
+
+      const userPrompt = await vscode.window.showInputBox({
+        prompt: `What do you want to ask about "${ev.filePath ? path.basename(ev.filePath) : ev.source}"?`,
+        placeHolder: 'e.g. Look for deadlocks, explain the high-CPU threads, summarize key errors...',
+        ignoreFocusOut: true,
+      });
+      if (userPrompt === undefined) return; // Escape pressed
+
+      const cliCmd = await pickAiCli();
+      if (!cliCmd) return;
+
+      // Resolve content: prefer in-memory rawContent, fall back to reading the file
+      let content: string;
+      const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp']);
+      const fileExt = path.extname(ev.filePath ?? '').toLowerCase();
+      if (IMAGE_EXTS.has(fileExt)) {
+        content = `[Binary image file — cannot include inline content]`;
+      } else if (ev.rawContent) {
+        content = ev.rawContent;
+      } else if (ev.filePath) {
+        content = ev.filePath;
+      } else {
+        vscode.window.showWarningMessage('This evidence item has no readable content.'); return;
+      }
+
+      const evName = ev.filePath ? path.basename(ev.filePath) : ev.source;
+      const header = [
+        userPrompt || 'Please review the following evidence and provide your analysis.',
+        '',
+        '---',
+        '',
+        `# Evidence: ${evName}`,
+        `**Type:** ${ev.type}  **Case:** ${session.meta.id} -- ${session.meta.title}`,
+        `**Captured:** ${ev.capturedAt.toISOString().slice(0, 19).replace('T', ' ')}`,
+        '',
+        '## Content',
+        '',
+      ].join('\n');
+
+      const tmpFile = path.join(os.tmpdir(), `ii-ev-${evidenceId.slice(0, 12)}.md`);
+      require('fs').writeFileSync(tmpFile, header + content, 'utf-8');
+
+      const terminal = vscode.window.createTerminal(`AI Review -- ${evName}`);
+      terminal.show();
+      terminal.sendText(`${cliCmd} < "${tmpFile}"`);
+    }),
+    vscode.commands.registerCommand('investigator.addToCase', async (uri?: vscode.Uri, allUris?: vscode.Uri[]) => {
+      const uris = allUris?.length ? allUris : uri ? [uri] : [];
+      if (!uris.length) {
+        vscode.window.showWarningMessage('Incident Investigator: no files selected.');
+        return;
+      }
+
+      let caseId = caseManager.getActiveCaseId();
+      if (!caseId) {
+        const openCases = caseManager.getAllCases().filter(c => c.status === 'open');
+        if (!openCases.length) {
+          vscode.window.showErrorMessage('Incident Investigator: no open cases. Create a case first.');
+          return;
+        }
+        if (openCases.length === 1) {
+          caseId = openCases[0].id;
+        } else {
+          const pick = await vscode.window.showQuickPick(
+            openCases.map(c => ({ label: c.id, description: c.title, id: c.id })),
+            { placeHolder: 'Select case to add evidence to' }
+          );
+          if (!pick) return;
+          caseId = (pick as { id: string }).id;
+        }
+      }
+
+      const added = await webview.addUrisToCase(caseId, uris);
+      webview.openCase(caseId);
+      vscode.window.showInformationMessage(
+        `Added ${added} item${added === 1 ? '' : 's'} to ${caseId}.`
+      );
+    }),
     statusItem
   );
 }
