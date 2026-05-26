@@ -396,6 +396,16 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .viewer-content pre{white-space:pre-wrap;word-break:break-all;margin:0}
 .viewer-content img{max-width:100%;height:auto;display:block;margin:0 auto}
 .viewer-empty{text-align:center;padding:32px 12px;font-size:11px;color:var(--vscode-descriptionForeground);line-height:1.8}
+.pane-search{display:none;padding:3px 6px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);align-items:center;gap:4px;flex-shrink:0}
+.pane-search.visible{display:flex}
+.pane-search-input{flex:1;min-width:0;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));padding:2px 5px;font-size:10px;border-radius:2px;outline:none;font-family:inherit}
+.pane-search-input:focus{border-color:var(--vscode-focusBorder)}
+.pane-search-count{font-size:10px;color:var(--vscode-descriptionForeground);white-space:nowrap;min-width:52px;text-align:right}
+.pane-search-nav{padding:0 5px;font-size:12px;line-height:1.6;background:none;border:1px solid transparent;border-radius:2px;color:var(--vscode-descriptionForeground);cursor:pointer;flex-shrink:0}
+.pane-search-nav:hover{background:var(--vscode-list-hoverBackground);color:var(--vscode-foreground);border-color:var(--vscode-panel-border)}
+.pane-search-nav:disabled{opacity:.3;cursor:not-allowed}
+mark.search-match{background:#cca70033;color:inherit;border-radius:1px}
+mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .viewer-empty-state{display:flex;align-items:center;justify-content:center;flex:1;font-size:11px;color:var(--vscode-descriptionForeground);padding:40px 12px;text-align:center;line-height:1.8}
 .ctx-menu{display:none;position:fixed;background:var(--vscode-menu-background,#252526);border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:3px;z-index:9999;min-width:150px;overflow:hidden;box-shadow:2px 4px 12px rgba(0,0,0,.4)}
 .ctx-item{padding:6px 14px;font-size:12px;cursor:pointer;color:var(--vscode-menu-foreground,var(--vscode-foreground));user-select:none}
@@ -404,7 +414,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .ctx-sep{height:1px;background:var(--vscode-menu-separatorBackground,var(--vscode-panel-border));margin:3px 0}
 .collapse-btn{background:none;border:none;color:var(--vscode-descriptionForeground);cursor:pointer;font-size:13px;padding:0 4px;line-height:1;border-radius:2px;flex-shrink:0;opacity:.55;font-weight:400}
 .collapse-btn:hover{opacity:1;background:var(--vscode-list-hoverBackground)}
-.col.collapsed{width:28px!important;flex:none!important;overflow:hidden!important}
+.col.collapsed{width:28px!important;min-width:0!important;flex:none!important;overflow:hidden!important}
 .col.collapsed>*:not(.col-header){display:none!important}
 .col.collapsed .col-header>*:not(.collapse-btn){display:none!important}
 .col.collapsed .col-header{justify-content:center;cursor:default}
@@ -768,6 +778,12 @@ function openInViewer(evId, name) {
       '<button class="btn pane-open-btn" title="Open in editor" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">Open &#x2197;</button>'+
       '<button class="btn pane-close-btn" title="Close pane" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">&#x2715;</button>'+
     '</div>'+
+    '<div class="pane-search" id="search-'+paneId+'">'+
+      '<input class="pane-search-input" id="search-input-'+paneId+'" placeholder="Search in file…" autocomplete="off" spellcheck="false">'+
+      '<span class="pane-search-count" id="search-count-'+paneId+'"></span>'+
+      '<button class="pane-search-nav pane-search-prev" title="Previous (Shift+Enter)">&#x2191;</button>'+
+      '<button class="pane-search-nav pane-search-next" title="Next (Enter)">&#x2193;</button>'+
+    '</div>'+
     '<div class="viewer-content" id="vcontent-'+paneId+'"><div class="viewer-empty">Loading…</div></div>';
 
   el.querySelector('.pane-open-btn').addEventListener('click', function() {
@@ -776,6 +792,15 @@ function openInViewer(evId, name) {
   el.querySelector('.pane-close-btn').addEventListener('click', function(e) {
     closePane(e, paneId);
   });
+
+  var searchInput = el.querySelector('.pane-search-input');
+  searchInput.addEventListener('input', function() { runPaneSearch(paneId); });
+  searchInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); navPaneMatch(paneId, e.shiftKey ? -1 : 1); }
+    if (e.key === 'Escape') { searchInput.value = ''; runPaneSearch(paneId); }
+  });
+  el.querySelector('.pane-search-prev').addEventListener('click', function() { navPaneMatch(paneId, -1); });
+  el.querySelector('.pane-search-next').addEventListener('click', function() { navPaneMatch(paneId, 1); });
 
   var body = document.getElementById('viewer-body');
   document.getElementById('viewer-empty-state').style.display = 'none';
@@ -793,6 +818,7 @@ function closePane(e, paneId) {
   var evId = viewerPanes[idx].evId;
   viewerPanes[idx].el.remove();
   viewerPanes.splice(idx, 1);
+  delete paneRawText[paneId];
   if (viewerPanes.length === 0) {
     document.getElementById('viewer-empty-state').style.display = '';
   }
@@ -814,18 +840,83 @@ function markActiveEv(evId) {
   });
 }
 
+var paneRawText = {}; // paneId → original text, kept for re-search without re-fetch
+
 function renderViewerContent(paneId, evId, name, content, contentType) {
   var contentEl = document.getElementById('vcontent-' + paneId);
+  var searchEl  = document.getElementById('search-' + paneId);
   if (!contentEl) return;
   if (!content) {
     contentEl.innerHTML = '<div class="viewer-empty">No content available for this file.</div>';
+    if (searchEl) searchEl.classList.remove('visible');
     return;
   }
   if (contentType === 'image') {
     contentEl.innerHTML = '<img src="'+content+'" alt="'+esc(name)+'">';
+    if (searchEl) searchEl.classList.remove('visible');
   } else {
+    paneRawText[paneId] = content;
     contentEl.innerHTML = '<pre>'+esc(content)+'</pre>';
+    if (searchEl) searchEl.classList.add('visible');
   }
+}
+
+function runPaneSearch(paneId) {
+  var input     = document.getElementById('search-input-' + paneId);
+  var countEl   = document.getElementById('search-count-' + paneId);
+  var contentEl = document.getElementById('vcontent-' + paneId);
+  if (!input || !contentEl) return;
+  var query   = input.value;
+  var rawText = paneRawText[paneId];
+  if (rawText === undefined) return;
+
+  if (!query) {
+    contentEl.innerHTML = '<pre>' + esc(rawText) + '</pre>';
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+
+  // Build highlighted HTML by scanning the raw text for case-insensitive matches
+  var lower  = rawText.toLowerCase();
+  var lowerQ = query.toLowerCase();
+  var html = '';
+  var i = 0;
+  var count = 0;
+  while (i <= rawText.length) {
+    var idx = lower.indexOf(lowerQ, i);
+    if (idx === -1) { html += esc(rawText.slice(i)); break; }
+    if (idx > i) html += esc(rawText.slice(i, idx));
+    html += '<mark class="search-match">' + esc(rawText.slice(idx, idx + query.length)) + '</mark>';
+    count++;
+    i = idx + query.length;
+    if (lowerQ.length === 0) break; // safety — empty query already handled above
+  }
+  contentEl.innerHTML = '<pre>' + html + '</pre>';
+  contentEl.dataset.matchIdx = '0';
+
+  var marks = contentEl.querySelectorAll('.search-match');
+  if (marks.length > 0) {
+    marks[0].classList.add('active-match');
+    marks[0].scrollIntoView({ block: 'nearest' });
+    if (countEl) countEl.textContent = '1 / ' + count;
+  } else {
+    if (countEl) countEl.textContent = 'no results';
+  }
+}
+
+function navPaneMatch(paneId, dir) {
+  var contentEl = document.getElementById('vcontent-' + paneId);
+  var countEl   = document.getElementById('search-count-' + paneId);
+  if (!contentEl) return;
+  var marks = Array.from(contentEl.querySelectorAll('.search-match'));
+  if (!marks.length) return;
+  var cur  = parseInt(contentEl.dataset.matchIdx || '0', 10);
+  marks[cur].classList.remove('active-match');
+  var next = (cur + dir + marks.length) % marks.length;
+  marks[next].classList.add('active-match');
+  marks[next].scrollIntoView({ block: 'nearest' });
+  contentEl.dataset.matchIdx = String(next);
+  if (countEl) countEl.textContent = (next + 1) + ' / ' + marks.length;
 }
 
 function removeEvidence(id) {
