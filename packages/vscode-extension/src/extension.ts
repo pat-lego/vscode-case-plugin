@@ -17,16 +17,18 @@ import { ManualSignatureBuilderPanel } from './panels/manual-signature-builder.w
 import { CaseResolutionPanel } from './panels/case-resolution.webview';
 import { ClaudeReviewPanel } from './panels/claude-review.webview';
 import { StaticAnalysisPanel } from './panels/static-analysis.webview';
+import { createLogger } from './logger';
 
 export function activate(context: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Incident Investigator');
   context.subscriptions.push(out);
+  const log = createLogger(out);
 
   // Services
-  const caseManager     = new CaseManager(context);
+  const caseManager     = new CaseManager(context, log);
   const sigService      = new SignatureService(context);
-  const analysisService = new AnalysisService(caseManager, sigService);
-  const bridgeServer    = new BridgeServer(caseManager, analysisService, out);
+  const analysisService = new AnalysisService(caseManager, sigService, log);
+  const bridgeServer    = new BridgeServer(caseManager, analysisService, log);
 
   // Providers
   const openCasesProvider   = new OpenCasesProvider(caseManager);
@@ -42,7 +44,7 @@ export function activate(context: vscode.ExtensionContext) {
   bridgeServer.start(cfg.get<number>('bridgePort') ?? 7734);
 
   // Log startup state so we can diagnose active-case issues
-  out.appendLine(`[init] sessions=${caseManager.getAllCases().length} activeCaseId=${caseManager.getActiveCaseId() ?? 'null'}`);
+  log.info('extension', 'activated', { sessions: caseManager.getAllCases().length, activeCaseId: caseManager.getActiveCaseId() ?? null });
 
   // Status bar bridge indicator
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -57,7 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
   statusItem.show();
   bridgeServer.onStatusChange(() => updateStatusBar());
   caseManager.onActiveChange(id => {
-    out.appendLine(`[activeCase] → ${id ?? 'null'}`);
+    log.info('extension', `active case changed`, { caseId: id ?? null });
     updateStatusBar();
   });
 

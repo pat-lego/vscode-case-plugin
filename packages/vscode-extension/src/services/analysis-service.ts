@@ -10,6 +10,7 @@ import {
 } from '@incident-investigator/core';
 import { CaseManager } from './case-manager';
 import { SignatureService } from './signature-service';
+import { IILogger, nullLogger } from '../logger';
 
 export type EvidenceType = EvidenceItem['type'];
 
@@ -67,7 +68,8 @@ export function extractTimestamp(content: string): Date {
 export class AnalysisService {
   constructor(
     private caseManager: CaseManager,
-    private signatureService: SignatureService
+    private signatureService: SignatureService,
+    private log: IILogger = nullLogger
   ) {}
 
   processEvidence(
@@ -79,9 +81,22 @@ export class AnalysisService {
     const type = detectEvidenceType(name, content);
     const capturedAt = type === 'thread-dump' ? extractTimestamp(content) : new Date();
 
+    this.log.info('analysis', 'processEvidence', { caseId, name, type, contentLen: content.length, filePath: filePath || null });
+
     let signals: ThreadDumpSignals | undefined;
     if (type === 'thread-dump') {
       signals = parseThreadDump(content, capturedAt);
+      this.log.info('analysis', 'parsed thread dump', {
+        caseId,
+        format: signals.format,
+        totalThreads: signals.totalThreadCount,
+        blocked: signals.stateCounts.BLOCKED,
+        waiting: signals.stateCounts.WAITING,
+        timedWaiting: signals.stateCounts.TIMED_WAITING,
+        gcThreads: signals.gcThreadCount,
+        ioThreads: signals.ioThreadCount,
+        capturedAt: capturedAt.toISOString(),
+      });
     }
 
     const evidenceItem: EvidenceItem = {
@@ -97,18 +112,48 @@ export class AnalysisService {
 
     const session = this.caseManager.getSession(caseId);
     if (!session || session.threadDumpSignals.length === 0) {
+      this.log.debug('analysis', 'no thread dump signals yet — skipping analysis', { caseId });
       return { evidenceItem, findings: [] };
     }
 
     const findings = this.rerun(session.threadDumpSignals);
     this.caseManager.updateFindings(caseId, findings);
+    this.log.info('analysis', 'processEvidence done', { caseId, evId: evidenceItem.id, findings: findings.length });
     return { evidenceItem, findings };
   }
 
   rerun(signals: ThreadDumpSignals[]): Finding[] {
     if (signals.length === 0) return [];
+    this.log.debug('analysis', 'extractSignals', { dumpCount: signals.length });
     const extracted = extractSignals(signals);
-    return matchSignatures(extracted, this.signatureService.getAll());
+    const s = extracted.summary;
+    this.log.debug('analysis', 'signals summary', {
+      totalThreads: s.totalThreadCount,
+      blocked: s.blockedThreadCount,
+      waiting: s.waitingThreadCount,
+      ioThreads: s.ioThreadCount,
+      gcThreads: s.gcThreadCount,
+      dominantFP: s.dominantFingerprintCount,
+      dominantRatio: Math.round(s.dominantFingerprintRatio * 100) + '%',
+      persistentMonitors: s.persistentBlockedMonitors,
+      maxBlockedOnMonitor: s.maxBlockedOnSingleMonitor,
+      topMonitorClass: s.topBlockedMonitorClass || null,
+    });
+    const sigs = this.signatureService.getAll();
+    this.log.debug('analysis', 'matchSignatures', { signatureCount: sigs.length });
+    const findings = matchSignatures(extracted, sigs);
+    for (const f of findings) {
+      this.log.debug('analysis', 'finding', {
+        sig: f.signatureId,
+        name: f.signatureName,
+        confidence: f.confidence,
+        score: Math.round(f.confidenceScore * 100) + '%',
+        matched: f.matchedConditions.length,
+        unmatched: f.unmatchedConditions.length,
+      });
+    }
+    this.log.info('analysis', 'rerun complete', { dumpCount: signals.length, findings: findings.length });
+    return findings;
   }
 
   reanalyzeCaseWithLatestSignatures(caseId: string): Finding[] {

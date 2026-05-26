@@ -2,8 +2,15 @@ import { getState, setState, InboundMessage, OutboundMessage } from '../bridge/w
 
 let ws: WebSocket | null = null;
 
-function log(...args: unknown[]) {
-  console.log('[II-bg]', ...args);
+function log(level: 'DEBUG'|'INFO'|'WARN'|'ERROR', msg: string, ctx?: Record<string, unknown>) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const ctxStr = ctx && Object.keys(ctx).length > 0 ? ' ' + JSON.stringify(ctx) : '';
+  const line = `[${ts}] [${level}] [II-bg] ${msg}${ctxStr}`;
+  if (level === 'ERROR' || level === 'WARN') {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
 }
 
 // Guard against "Extension context invalidated" — Chrome can fire pending
@@ -12,27 +19,27 @@ function isContextValid(): boolean {
   try { return !!chrome.runtime.id; } catch { return false; }
 }
 
-log('service worker started');
+log('INFO', 'service worker started');
 
 // Mark disconnected on restart but keep activeCase — it will be refreshed
 // from VS Code once the WebSocket reconnects.
-setState({ connected: false }).then(() => log('initial setState done'));
+setState({ connected: false }).then(() => log('INFO', 'initial state reset to disconnected'));
 
 async function connect() {
   const state = await getState();
   const url = `ws://127.0.0.1:${state.port}`;
-  log(`connect() ws.readyState=${ws?.readyState ?? 'null'} url=${url}`);
+  log('INFO', 'connect()', { readyState: ws?.readyState ?? null, url });
 
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    log('already connected/connecting — skipping');
+    log('DEBUG', 'connect: already connected/connecting — skip');
     return;
   }
 
-  log('creating WebSocket...');
+  log('INFO', 'creating WebSocket', { url });
   ws = new WebSocket(url);
 
   ws.onopen = async () => {
-    log('onopen — connected');
+    log('INFO', 'WebSocket connected');
     await setState({ connected: true });
     notifyPopup({ type: 'stateChanged' });
     startPing();
@@ -40,7 +47,7 @@ async function connect() {
     fetchActiveCase(state.port);
     // Also send queryActiveCase over WS as a fallback in case WS messages work.
     setTimeout(() => {
-      log('sending queryActiveCase over WS');
+      log('DEBUG', 'sending queryActiveCase over WS');
       send({ type: 'queryActiveCase' });
     }, 300);
   };
@@ -48,22 +55,22 @@ async function connect() {
   ws.onmessage = async (event) => {
     try {
       const msg: InboundMessage = JSON.parse(event.data as string);
-      log('onmessage', msg.type, msg.caseId ?? '');
+      log('DEBUG', 'ws message received', { type: msg.type, caseId: msg.caseId ?? null });
       if (msg.type === 'activeCase' && msg.caseId && msg.title) {
         await setState({ activeCase: { caseId: msg.caseId, title: msg.title } });
-        log('stored activeCase', msg.caseId);
+        log('INFO', 'active case stored from WS', { caseId: msg.caseId });
       } else if (msg.type === 'noActiveCase') {
         await setState({ activeCase: null });
-        log('cleared activeCase');
+        log('INFO', 'active case cleared (noActiveCase from WS)');
       }
       notifyPopup({ type: 'stateChanged' });
     } catch (e) {
-      log('onmessage error', e);
+      log('ERROR', 'ws message parse error', { error: String(e) });
     }
   };
 
   ws.onclose = async (ev) => {
-    log(`onclose code=${ev.code} reason=${ev.reason}`);
+    log('INFO', 'WebSocket closed', { code: ev.code, reason: ev.reason || null });
     ws = null;
     if (!isContextValid()) return;
     try {
@@ -71,12 +78,12 @@ async function connect() {
       notifyPopup({ type: 'stateChanged' });
       scheduleReconnect();
     } catch (e) {
-      log('onclose error (context gone):', e);
+      log('WARN', 'onclose error (context invalidated)', { error: String(e) });
     }
   };
 
   ws.onerror = (ev) => {
-    log('onerror', ev);
+    log('ERROR', 'WebSocket error');
     ws?.close();
   };
 }
@@ -85,17 +92,17 @@ async function fetchActiveCase(port: number) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/state`);
     const data = await res.json() as { type: string; caseId?: string; title?: string };
-    log('fetchActiveCase response:', data.type, data.caseId ?? '');
+    log('DEBUG', 'fetchActiveCase response', { type: data.type, caseId: data.caseId ?? null });
     if (data.type === 'activeCase' && data.caseId && data.title) {
       await setState({ activeCase: { caseId: data.caseId, title: data.title } });
-      log('stored activeCase via HTTP', data.caseId);
+      log('INFO', 'active case stored via HTTP', { caseId: data.caseId });
     } else if (data.type === 'noActiveCase') {
       await setState({ activeCase: null });
-      log('no active case (HTTP)');
+      log('INFO', 'no active case (HTTP response)');
     }
     notifyPopup({ type: 'stateChanged' });
   } catch (e) {
-    log('fetchActiveCase error:', e);
+    log('WARN', 'fetchActiveCase failed', { error: String(e) });
   }
 }
 

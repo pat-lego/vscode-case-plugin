@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CaseManager } from './case-manager';
 import { AnalysisService } from './analysis-service';
+import { IILogger, nullLogger } from '../logger';
 
 export interface BridgeCapture {
   type: 'capture' | 'screenshot';
@@ -34,7 +35,7 @@ export class BridgeServer implements vscode.Disposable {
   constructor(
     private caseManager: CaseManager,
     private analysisService: AnalysisService,
-    private out?: vscode.OutputChannel
+    private log: IILogger = nullLogger
   ) {
     this.caseManager.onActiveChange(() => this.broadcastActiveCase());
   }
@@ -45,6 +46,7 @@ export class BridgeServer implements vscode.Disposable {
 
   start(port: number) {
     if (this.server || this.httpServer) return;
+    this.log.info('bridge', 'starting', { port });
 
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
@@ -63,7 +65,7 @@ export class BridgeServer implements vscode.Disposable {
       if (req.url === '/state') {
         this.touchActivity();
         const payload = this.activeCasePayload();
-        this.out?.appendLine(`[bridge] GET /state → ${JSON.stringify(payload)}`);
+        this.log.debug('bridge', 'GET /state', { type: (payload as Record<string,unknown>).type, caseId: (payload as Record<string,unknown>).caseId ?? null });
         res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
         res.end(JSON.stringify(payload));
         return;
@@ -77,7 +79,7 @@ export class BridgeServer implements vscode.Disposable {
         req.on('end', () => {
           try {
             const msg = JSON.parse(body) as Record<string, unknown>;
-            this.out?.appendLine(`[bridge] POST /capture type=${msg.type} name=${msg.name ?? ''}`);
+            this.log.info('bridge', 'POST /capture', { type: msg.type, name: msg.name ?? null });
             const result = this.processCapture(msg);
             res.writeHead(result.ok ? 200 : 400, { ...corsHeaders, 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
@@ -110,7 +112,7 @@ export class BridgeServer implements vscode.Disposable {
     this.server.on('connection', (ws) => {
       this.clients.add(ws);
       const payload = this.activeCasePayload();
-      this.out?.appendLine(`[bridge] client connected → sending ${JSON.stringify(payload)}`);
+      this.log.info('bridge', 'client connected', { totalClients: this.clients.size, activeCasePayload: (payload as Record<string,unknown>).type });
       this.sendTo(ws, payload);
       this.touchActivity();
 
@@ -123,6 +125,7 @@ export class BridgeServer implements vscode.Disposable {
 
       ws.on('close', () => {
         this.clients.delete(ws);
+        this.log.info('bridge', 'client disconnected', { totalClients: this.clients.size });
         if (!this.isConnected()) this.statusEmitter.fire(false);
       });
     });
@@ -144,6 +147,7 @@ export class BridgeServer implements vscode.Disposable {
     });
 
     this.httpServer.listen(port, '127.0.0.1');
+    this.log.info('bridge', 'listening', { port, host: '127.0.0.1' });
 
     // Periodically check whether the activity window has expired so the
     // status bar transitions back to "disconnected" without needing a WS event.
@@ -171,15 +175,19 @@ export class BridgeServer implements vscode.Disposable {
     const wasConnected = this.isConnected();
     this.lastActivityAt = Date.now();
     if (!wasConnected) this.statusEmitter.fire(true);
+    if (!wasConnected) this.log.info('bridge', 'bridge transitioned to connected');
   }
 
   broadcastActiveCase() {
     const payload = this.activeCasePayload();
-    this.out?.appendLine(`[bridge] broadcastActiveCase → ${JSON.stringify(payload)}`);
+    this.log.debug('bridge', 'broadcastActiveCase', { clients: this.clients.size, payload: payload as Record<string,unknown> });
     this.broadcast(payload);
   }
 
   private handleMessage(ws: WebSocket.WebSocket, msg: Record<string, unknown>) {
+    if (msg.type !== 'ping') {
+      this.log.debug('bridge', 'ws ← received', { type: msg.type });
+    }
     if (msg.type === 'ping') {
       this.sendTo(ws, { type: 'pong' });
       return;
@@ -187,7 +195,7 @@ export class BridgeServer implements vscode.Disposable {
 
     if (msg.type === 'queryActiveCase') {
       const payload = this.activeCasePayload();
-      this.out?.appendLine(`[bridge] queryActiveCase → ${JSON.stringify(payload)}`);
+      this.log.debug('bridge', 'ws → queryActiveCase response', { type: (payload as Record<string,unknown>).type, caseId: (payload as Record<string,unknown>).caseId ?? null });
       this.sendTo(ws, payload);
       return;
     }
@@ -228,7 +236,7 @@ export class BridgeServer implements vscode.Disposable {
         try {
           fs.writeFileSync(filePath, Buffer.from(match[1], 'base64'));
         } catch (e) {
-          this.out?.appendLine(`[bridge] screenshot write failed: ${e}`);
+          this.log.error('bridge', 'screenshot write failed', { error: String(e), destPath: filePath });
           filePath = '';
         }
       }
@@ -237,10 +245,11 @@ export class BridgeServer implements vscode.Disposable {
       content = String(msg.content ?? msg.data ?? '');
     }
 
-    this.out?.appendLine(`[bridge] processCapture caseId=${caseId} name=${name} contentLen=${content.length}`);
+    this.log.info('bridge', 'processCapture', { caseId, name, type: String(msg.type), contentLen: content.length, hasFilePath: !!filePath });
     this.analysisService.processEvidence(caseId, name, content, filePath);
     vscode.window.showInformationMessage(`[II] Captured: ${name}`);
     this.captureEmitter.fire({ caseId, name });
+    this.log.info('bridge', 'capture complete', { caseId, name });
     return { ok: true, name, caseId };
   }
 

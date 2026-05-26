@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { Case, EvidenceItem, ThreadDumpSignals, Finding } from '@incident-investigator/core';
+import { IILogger, nullLogger } from '../logger';
 
 export interface CaseSession {
   meta: Case;
@@ -28,7 +29,7 @@ export class CaseManager {
   private onCaseUpdatedEmitter = new vscode.EventEmitter<string>();
   readonly onCaseUpdated = this.onCaseUpdatedEmitter.event;
 
-  constructor(private context: vscode.ExtensionContext) {
+  constructor(private context: vscode.ExtensionContext, private log: IILogger = nullLogger) {
     const paths = this.getCasePaths();
     if (paths.length > 0) {
       this.loadFromDisk(paths);
@@ -45,6 +46,7 @@ export class CaseManager {
     } else {
       this.activeCaseId = this.pickDefaultActiveCase();
     }
+    this.log.info('case-mgr', 'initialized', { cases: this.sessions.size, activeCaseId: this.activeCaseId ?? null });
   }
 
   private pickDefaultActiveCase(): string | null {
@@ -62,6 +64,7 @@ export class CaseManager {
     const casePath = targetCasePath ?? this.getCasePaths()[0] ?? '';
     const session: CaseSession = { meta, threadDumpSignals: [], findings: [], casePath };
     this.sessions.set(id, session);
+    this.log.info('case-mgr', 'createCase', { caseId: id, title, casePath });
     this.activeCaseId = id;
     this.context.globalState.update('investigator.activeCaseId', id);
     this.save(id);
@@ -73,6 +76,7 @@ export class CaseManager {
   setActiveCase(caseId: string): boolean {
     if (!this.sessions.has(caseId)) return false;
     this.activeCaseId = caseId;
+    this.log.debug('case-mgr', 'setActiveCase', { caseId });
     this.context.globalState.update('investigator.activeCaseId', caseId);
     this.onActiveChangeEmitter.fire(caseId);
     return true;
@@ -100,6 +104,7 @@ export class CaseManager {
     const session = this.sessions.get(caseId);
     if (!session) return;
     session.meta.evidence.push(item);
+    this.log.info('case-mgr', 'addEvidence', { caseId, evId: item.id, type: item.type, source: item.source, hasSignals: !!signals });
     session.meta.updatedAt = new Date();
     if (signals) session.threadDumpSignals.push(signals);
     this.save(caseId);
@@ -159,6 +164,7 @@ export class CaseManager {
     // name their cases via markdown headings regardless of readonly status.
     const heading = extractFirstHeading(notes);
     if (heading) session.meta.title = heading;
+    this.log.debug('case-mgr', 'updateNotes', { caseId, notesLen: notes.length, titleFromHeading: heading ?? null });
     if (session.readonly) {
       this.writeObsidianNote(caseId);
     } else {
@@ -171,6 +177,7 @@ export class CaseManager {
     const session = this.sessions.get(caseId);
     if (!session) return;
     session.meta.title = title;
+    this.log.info('case-mgr', 'updateTitle', { caseId, title });
     session.meta.updatedAt = new Date();
     if (session.readonly) {
       // For Obsidian notes, update the heading inside the notes body so the
@@ -194,6 +201,7 @@ export class CaseManager {
     session.meta.status = 'resolved';
     session.meta.resolution = resolution;
     session.meta.resolvedBy = resolvedBy;
+    this.log.info('case-mgr', 'resolveCase', { caseId, resolvedBy, readonly: session.readonly ?? false });
     session.meta.updatedAt = new Date();
     if (session.readonly) session.readonly = false;
     this.save(caseId);
@@ -208,6 +216,7 @@ export class CaseManager {
     session.meta.updatedAt = new Date();
     session.readonly = false;
     this.activeCaseId = caseId;
+    this.log.info('case-mgr', 'reopenCase', { caseId });
     this.context.globalState.update('investigator.activeCaseId', caseId);
     this.save(caseId);
     this.onCaseUpdatedEmitter.fire(caseId);
@@ -217,6 +226,7 @@ export class CaseManager {
   deleteCase(caseId: string): boolean {
     const session = this.sessions.get(caseId);
     if (!session) return false;
+    this.log.info('case-mgr', 'deleteCase', { caseId });
 
     if (session.casePath) {
       const caseDir = path.join(session.casePath, caseId);
@@ -271,15 +281,21 @@ export class CaseManager {
 
   private save(caseId: string) {
     const session = this.sessions.get(caseId);
-    if (!session || session.readonly) return;
+    if (!session || session.readonly) {
+      this.log.debug('case-mgr', 'save skipped', { caseId, reason: !session ? 'no session' : 'readonly' });
+      return;
+    }
 
     if (session.casePath) {
+      this.log.debug('case-mgr', 'save → disk', { caseId, casePath: session.casePath });
       try {
         this.writeToDisk(caseId, session.casePath);
       } catch (err) {
+        this.log.error('case-mgr', 'writeToDisk failed', { caseId, error: String(err) });
         vscode.window.showWarningMessage(`Incident Investigator: could not write case to disk — ${err}`);
       }
     } else {
+      this.log.debug('case-mgr', 'save → globalState', { caseId });
       this.persistToGlobalState();
     }
   }
@@ -334,6 +350,7 @@ export class CaseManager {
         }
       }
     }
+    this.log.info('case-mgr', 'loadFromDisk complete', { paths: casePaths.length, loaded: this.sessions.size });
   }
 
   /**
@@ -481,6 +498,7 @@ export class CaseManager {
     const body = buildCaseSummary(session);
     const md = `---\n${frontmatter}---\n\n${body}`;
     fs.writeFileSync(path.join(caseDir, `${caseId}.md`), md, 'utf-8');
+    this.log.debug('case-mgr', 'writeToDisk ok', { caseId, path: path.join(caseDir, `${caseId}.md`) });
   }
 
   // ── Global state fallback (used when no casePaths are configured) ─────────
