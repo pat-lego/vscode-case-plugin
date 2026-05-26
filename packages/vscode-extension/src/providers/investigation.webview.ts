@@ -333,6 +333,34 @@ export class InvestigationWebview {
         break;
       }
 
+      case 'loadInlineFile': {
+        const session = this.caseManager.getSession(caseId);
+        if (!session || !session.casePath) break;
+        const caseDir = path.join(session.casePath, caseId);
+        const fileSrc = String(msg.src ?? '');
+        const relPath = fileSrc.startsWith('./') ? fileSrc.slice(2) : fileSrc;
+        const absPath = path.isAbsolute(relPath) ? relPath : path.join(caseDir, relPath);
+        let content: string | undefined;
+        // Try the path resolved relative to the case directory
+        try { content = fs.readFileSync(absPath, 'utf-8'); } catch { /* not found */ }
+        // Fall back: find a matching evidence item by basename
+        if (content === undefined) {
+          const baseName = path.basename(relPath);
+          const ev = session.meta.evidence.find(e =>
+            (e.filePath && path.basename(e.filePath) === baseName) || e.source === baseName
+          );
+          if (ev?.rawContent) {
+            content = ev.rawContent;
+          } else if (ev?.filePath) {
+            try { content = fs.readFileSync(ev.filePath, 'utf-8'); } catch { /* not found */ }
+          }
+        }
+        if (content !== undefined) {
+          panel.webview.postMessage({ type: 'inlineFileLoaded', src: fileSrc, content });
+        }
+        break;
+      }
+
       case 'loadPreviewImage': {
         const session = this.caseManager.getSession(caseId);
         if (!session || !session.casePath) break;
@@ -521,7 +549,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .col-header.drag-over{background:var(--vscode-list-hoverBackground);outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
 .col-drag-hint{font-size:9px;opacity:.45;margin-left:4px;font-weight:400;text-transform:none;letter-spacing:0}
 .col-body{flex:1;overflow-y:auto;padding:8px}
-.notes-area{flex:1;width:100%;resize:none;background:transparent;color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family,var(--vscode-font-family));font-size:var(--vscode-editor-font-size,var(--vscode-font-size));border:none;outline:none;padding:8px;line-height:1.6;box-sizing:border-box}
+.notes-area{flex:1;min-height:0;width:100%;resize:none;background:transparent;color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family,var(--vscode-font-family));font-size:var(--vscode-editor-font-size,var(--vscode-font-size));border:none;outline:none;padding:8px;line-height:1.6;box-sizing:border-box}
 .notes-area::placeholder{color:var(--vscode-input-placeholderForeground)}
 .save-indicator{font-size:9px;color:var(--vscode-descriptionForeground);opacity:0;transition:opacity .3s;padding-right:4px;cursor:default;text-transform:none;letter-spacing:0;font-weight:400}
 .save-indicator.show{opacity:1}
@@ -640,6 +668,21 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .notes-preview hr{border:none;border-top:1px solid var(--vscode-panel-border);margin:10px 0}
 .notes-preview strong{font-weight:700}
 .notes-preview em{font-style:italic}
+.notes-preview .emb-ref-link{font-family:var(--vscode-editor-font-family,monospace);font-size:.9em;color:var(--vscode-textLink-foreground,#3794ff);background:var(--vscode-sideBar-background);padding:1px 5px;border-radius:2px}
+#notes-refs-wrap{flex-shrink:0;max-height:45%;display:none;flex-direction:column;border-top:2px solid var(--vscode-panel-border);overflow:hidden}
+#notes-refs-searchbar{display:flex;align-items:center;gap:4px;padding:3px 6px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
+#notes-refs-search-input{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));padding:2px 5px;font-size:10px;border-radius:2px;outline:none;font-family:inherit}
+#notes-refs-search-input:focus{border-color:var(--vscode-focusBorder)}
+#notes-refs-count{font-size:10px;color:var(--vscode-descriptionForeground);white-space:nowrap;min-width:48px;text-align:right}
+#notes-embedded-refs{overflow-y:auto;flex:1}
+.emb-ref{border-bottom:1px solid var(--vscode-panel-border)}
+.emb-ref-hdr{display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--vscode-sideBar-background);cursor:pointer;user-select:none;font-size:11px;color:var(--vscode-descriptionForeground)}
+.emb-ref-hdr:hover{background:var(--vscode-list-hoverBackground);color:var(--vscode-foreground)}
+.emb-ref-icon{font-size:9px;transition:transform .12s;flex-shrink:0}
+.emb-ref.collapsed .emb-ref-icon{transform:rotate(-90deg)}
+.emb-ref-name{font-family:var(--vscode-editor-font-family,monospace);font-size:11px;color:var(--vscode-foreground);flex:1}
+.emb-ref-body{margin:0;padding:6px 10px;max-height:350px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;font-family:var(--vscode-editor-font-family,monospace);line-height:1.5;color:var(--vscode-editor-foreground)}
+.emb-ref.collapsed .emb-ref-body{display:none}
 .md-toolbar{display:flex;align-items:center;gap:2px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
 .md-btn{background:none;border:1px solid transparent;color:var(--vscode-descriptionForeground);cursor:pointer;padding:2px 7px;font-size:11px;border-radius:2px;font-family:inherit;line-height:1.4;flex-shrink:0}
 .md-btn:hover{background:var(--vscode-list-hoverBackground);color:var(--vscode-foreground);border-color:var(--vscode-panel-border)}
@@ -711,6 +754,15 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
     </div>
     <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here&#x2026;&#10;&#10;What did you observe? What have you tried? What&#x27;s the current hypothesis?"></textarea>
     <div class="notes-preview" id="notes-preview"></div>
+    <div id="notes-refs-wrap">
+      <div id="notes-refs-searchbar">
+        <input id="notes-refs-search-input" placeholder="Search snippets..." autocomplete="off" spellcheck="false">
+        <span id="notes-refs-count"></span>
+        <button class="pane-search-nav" id="notes-refs-prev" title="Previous">&#x2191;</button>
+        <button class="pane-search-nav" id="notes-refs-next" title="Next">&#x2193;</button>
+      </div>
+      <div id="notes-embedded-refs"></div>
+    </div>
   </div>
   <div class="resize-handle" id="handle-1"></div>
   <div class="col viewer" id="col-viewer">
@@ -775,6 +827,158 @@ function debounce(fn, ms) {
   var t;
   return function() { clearTimeout(t); t = setTimeout(fn, ms); };
 }
+
+var embRefMatchCur = 0;
+
+function runEmbRefSearch() {
+  var input = document.getElementById('notes-refs-search-input');
+  var query = input ? input.value : '';
+  var countEl = document.getElementById('notes-refs-count');
+  embRefMatchCur = 0;
+  var refBodies = document.querySelectorAll('.emb-ref-body');
+  for (var i = 0; i < refBodies.length; i++) {
+    var bodyEl = refBodies[i];
+    var rawText = bodyEl.dataset.raw;
+    if (!rawText) continue;
+    if (!query) {
+      bodyEl.textContent = rawText;
+      continue;
+    }
+    var lower = rawText.toLowerCase();
+    var lowerQ = query.toLowerCase();
+    var qLen = lowerQ.length;
+    if (qLen === 0) { bodyEl.textContent = rawText; continue; }
+    var positions = [];
+    var p = lower.indexOf(lowerQ);
+    while (p !== -1) { positions.push(p); p = lower.indexOf(lowerQ, p + qLen); }
+    if (positions.length > 0) {
+      bodyEl.parentElement.classList.remove('collapsed');
+      var html = '';
+      var idx = 0;
+      for (var k = 0; k < positions.length; k++) {
+        var pos = positions[k];
+        if (pos > idx) html += esc(rawText.slice(idx, pos));
+        html += '<mark class="search-match">' + esc(rawText.slice(pos, pos + qLen)) + '</mark>';
+        idx = pos + qLen;
+      }
+      if (idx < rawText.length) html += esc(rawText.slice(idx));
+      bodyEl.innerHTML = html;
+    } else {
+      bodyEl.textContent = rawText;
+    }
+  }
+  if (!query) { if (countEl) countEl.textContent = ''; return; }
+  var allMarks = document.querySelectorAll('.emb-ref-body .search-match');
+  if (allMarks.length > 0) {
+    allMarks[0].classList.add('active-match');
+    allMarks[0].scrollIntoView({ block: 'nearest' });
+    if (countEl) countEl.textContent = '1 / ' + allMarks.length;
+  } else {
+    if (countEl) countEl.textContent = 'no results';
+  }
+}
+
+function navEmbRefMatch(dir) {
+  var allMarks = document.querySelectorAll('.emb-ref-body .search-match');
+  if (!allMarks.length) return;
+  allMarks[embRefMatchCur].classList.remove('active-match');
+  embRefMatchCur = (embRefMatchCur + dir + allMarks.length) % allMarks.length;
+  allMarks[embRefMatchCur].classList.add('active-match');
+  allMarks[embRefMatchCur].scrollIntoView({ block: 'nearest' });
+  var countEl = document.getElementById('notes-refs-count');
+  if (countEl) countEl.textContent = (embRefMatchCur + 1) + ' / ' + allMarks.length;
+}
+
+(function() {
+  var si = document.getElementById('notes-refs-search-input');
+  si.addEventListener('input', debounce(runEmbRefSearch, 250));
+  si.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); navEmbRefMatch(e.shiftKey ? -1 : 1); }
+    if (e.key === 'Escape') { si.value = ''; runEmbRefSearch(); }
+  });
+  document.getElementById('notes-refs-prev').addEventListener('click', function() { navEmbRefMatch(-1); });
+  document.getElementById('notes-refs-next').addEventListener('click', function() { navEmbRefMatch(1); });
+})();
+
+var embRefTimer;
+function updateEmbeddedRefs(notesText) {
+  var container = document.getElementById('notes-embedded-refs');
+  if (!container) return;
+  // Parse all local non-image file links in order
+  var ordered = [];
+  var seen = {};
+  var i = 0;
+  while (i < notesText.length) {
+    var ob = notesText.indexOf('[', i);
+    if (ob === -1) break;
+    var cb = notesText.indexOf(']', ob + 1);
+    if (cb === -1) { i = ob + 1; continue; }
+    if (notesText[cb + 1] !== '(') { i = cb + 1; continue; }
+    var pe = findLinkEnd(notesText, cb + 2);
+    if (pe === -1) { i = cb + 1; continue; }
+    var href = notesText.slice(cb + 2, pe);
+    var lhref = href.toLowerCase();
+    var isLocal = lhref.startsWith('./') || lhref.startsWith('../');
+    var isImgExt = lhref.endsWith('.png') || lhref.endsWith('.jpg') || lhref.endsWith('.jpeg') || lhref.endsWith('.gif') || lhref.endsWith('.webp');
+    if (isLocal && !isImgExt && !seen[href]) {
+      seen[href] = true;
+      ordered.push({ href: href, fname: href.split('/').pop() });
+    }
+    i = pe + 1;
+  }
+  // Remove blocks no longer referenced
+  var existingEls = container.querySelectorAll('.emb-ref');
+  for (var ri = 0; ri < existingEls.length; ri++) {
+    if (!seen[existingEls[ri].dataset.embSrc]) existingEls[ri].remove();
+  }
+  // Add new blocks; first 3 expanded, rest collapsed
+  var expandedCount = container.querySelectorAll('.emb-ref:not(.collapsed)').length;
+  ordered.forEach(function(ref) {
+    var already = container.querySelectorAll('.emb-ref');
+    for (var ai = 0; ai < already.length; ai++) {
+      if (already[ai].dataset.embSrc === ref.href) return;
+    }
+    var collapsed = expandedCount >= 3;
+    var div = document.createElement('div');
+    div.className = 'emb-ref' + (collapsed ? ' collapsed' : '');
+    div.dataset.embSrc = ref.href;
+    div.innerHTML = '<div class="emb-ref-hdr">'
+      + '<span class="emb-ref-icon">&#9660;</span>'
+      + '<span class="emb-ref-name">' + esc(ref.fname) + '</span>'
+      + '</div>'
+      + '<pre class="emb-ref-body">Loading...</pre>';
+    container.appendChild(div);
+    if (!collapsed) expandedCount++;
+    send('loadInlineFile', { src: ref.href });
+  });
+  // Show or hide the whole panel
+  var wrap = document.getElementById('notes-refs-wrap');
+  if (wrap) wrap.style.display = container.children.length > 0 ? 'flex' : 'none';
+  capEmbRefsHeight();
+}
+
+function capEmbRefsHeight() {
+  requestAnimationFrame(function() {
+    var container = document.getElementById('notes-embedded-refs');
+    if (!container) return;
+    var refs = container.querySelectorAll('.emb-ref');
+    if (refs.length <= 3) {
+      container.style.maxHeight = '';
+      return;
+    }
+    var h = 0;
+    for (var j = 0; j < 3; j++) h += refs[j].offsetHeight;
+    container.style.maxHeight = h + 'px';
+  });
+}
+
+// Event delegation for emb-ref toggle (CSP blocks inline onclick attributes)
+document.getElementById('notes-embedded-refs').addEventListener('click', function(e) {
+  var hdr = e.target.closest('.emb-ref-hdr');
+  if (!hdr) return;
+  hdr.parentElement.classList.toggle('collapsed');
+  capEmbRefsHeight();
+});
 
 // -- Layout ------------------------------------------------------------
 const MIN_W = {evidence: 110, notes: 140, viewer: 200};
@@ -952,7 +1156,7 @@ window.addEventListener('message', function(evt) {
     m.evidence.forEach(addEvidence);
     renderFindings(m.findings);
     var ta = document.getElementById('notes-area');
-    if (ta && m.notes) ta.value = m.notes;
+    if (ta && m.notes) { ta.value = m.notes; updateEmbeddedRefs(m.notes); }
     updateStatusButton(m.status);
   }
   else if (m.type === 'statusChanged') { updateStatusButton(m.status); }
@@ -988,6 +1192,18 @@ window.addEventListener('message', function(evt) {
       }
     }
   }
+  else if (m.type === 'inlineFileLoaded') {
+    var allEmb = document.querySelectorAll('.emb-ref');
+    for (var ei = 0; ei < allEmb.length; ei++) {
+      if (allEmb[ei].dataset.embSrc === m.src) {
+        var eb = allEmb[ei].querySelector('.emb-ref-body');
+        if (eb) { eb.dataset.raw = m.content; eb.textContent = m.content; }
+      }
+    }
+    var refsInput = document.getElementById('notes-refs-search-input');
+    if (refsInput && refsInput.value) runEmbRefSearch();
+    capEmbRefsHeight();
+  }
 });
 
 function doSaveNotes() {
@@ -999,6 +1215,8 @@ function doSaveNotes() {
 document.getElementById('notes-area').addEventListener('input', function() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(doSaveNotes, 150);
+  clearTimeout(embRefTimer);
+  embRefTimer = setTimeout(function() { updateEmbeddedRefs(document.getElementById('notes-area').value); }, 600);
 });
 
 document.getElementById('notes-area').addEventListener('blur', function() {
@@ -1667,7 +1885,7 @@ function inlineRender(text) {
       out += '!'; i++; continue;
     }
 
-    // Link [label](href) - renders as inline image when href is an image file
+    // Link [label](href) - image exts render inline; local text files show as badge (content in refs panel); else link
     if (c === '[') {
       var bEnd = text.indexOf(']', i + 1);
       if (bEnd !== -1 && text[bEnd + 1] === '(') {
@@ -1676,8 +1894,12 @@ function inlineRender(text) {
           var linkHref = text.slice(bEnd + 2, pEnd);
           var linkLabel = text.slice(i + 1, bEnd);
           var lh = linkHref.toLowerCase();
+          var isLocal = lh.startsWith('./') || lh.startsWith('../');
           if (lh.endsWith('.png') || lh.endsWith('.jpg') || lh.endsWith('.jpeg') || lh.endsWith('.gif') || lh.endsWith('.webp')) {
             out += '<img src="" data-preview-src="' + escAttr(linkHref) + '" alt="' + esc(linkLabel) + '" class="preview-img">';
+          } else if (isLocal) {
+            var fname = linkHref.split('/').pop();
+            out += '<span class="emb-ref-link">' + esc(fname) + '</span>';
           } else {
             out += '<a href="' + esc(linkHref) + '">' + esc(linkLabel) + '</a>';
           }
