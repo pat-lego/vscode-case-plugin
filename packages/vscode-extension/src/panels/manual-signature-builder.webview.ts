@@ -137,16 +137,16 @@ pre{
 </head>
 <body>
 <h1>${isEdit ? 'Edit Signature' : 'New Signature'}</h1>
-${isEdit ? '<div style="font-size:11px;color:var(--vscode-descriptionForeground);margin-bottom:14px;padding:5px 8px;background:var(--vscode-sideBar-background);border:1px solid var(--vscode-panel-border);border-radius:3px">Editing existing signature — ID is locked. Version will be auto-incremented to <strong>' + newVersion + '</strong> on save.</div>' : ''}
+${isEdit ? '<div style="font-size:11px;color:var(--vscode-descriptionForeground);margin-bottom:14px;padding:5px 8px;background:var(--vscode-sideBar-background);border:1px solid var(--vscode-panel-border);border-radius:3px">Editing existing signature &mdash; ID is locked. Version will be auto-incremented to <strong>' + newVersion + '</strong> on save.</div>' : ''}
 
 <h2>Identity</h2>
 <div class="two-col">
   <div class="field-row">
-    <label for="sig-id">ID (kebab-case)${isEdit ? ' — locked' : ''}</label>
+    <label for="sig-id">ID (kebab-case)${isEdit ? ' &mdash; locked' : ''}</label>
     <input id="sig-id" placeholder="e.g. high-blocked-thread-ratio" oninput="onInput()" ${isEdit ? 'readonly style="opacity:.55;cursor:not-allowed"' : ''}>
   </div>
   <div class="field-row">
-    <label for="sig-version">Version${isEdit ? ' — auto-incremented' : ''}</label>
+    <label for="sig-version">Version${isEdit ? ' &mdash; auto-incremented' : ''}</label>
     <input id="sig-version" value="${newVersion}" oninput="onInput()" ${isEdit ? 'readonly style="opacity:.55;cursor:not-allowed"' : ''}>
   </div>
 </div>
@@ -194,7 +194,7 @@ window.onerror = function(msg, src, line) {
 };
 const vscode = acquireVsCodeApi();
 
-// ── Field definitions ─────────────────────────────────────────────────────────
+// -- Field definitions -----------------------------------------------------------
 const FIELDS = [
   { group: 'Thread Count', fields: [
     { value: 'totalThreadCount',   label: 'Total Thread Count',            type: 'numeric' },
@@ -237,7 +237,7 @@ const OPERATORS_STRING = [
 ];
 const OPERATORS_FLAG = [{ value: 'eq', label: 'equals' }];
 
-// ── Condition state ────────────────────────────────────────────────────────────
+// -- Condition state -------------------------------------------------------------
 let conditions = [];
 let nextId = 0;
 
@@ -335,7 +335,7 @@ function setCondField(id, field, value) {
   }
 }
 
-// ── YAML generator (no external deps) ────────────────────────────────────────
+// -- YAML generator (no external deps) ------------------------------------------
 function toYaml(sig) {
   const lines = [];
   lines.push('id: ' + sig.id);
@@ -418,7 +418,7 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
-// ── Event delegation for dynamically-created condition blocks ────────────────
+// -- Event delegation for dynamically-created condition blocks ------------------
 document.getElementById('cond-list').addEventListener('click', function(e) {
   var btn = e.target.closest('[data-remove]');
   if (!btn) return;
@@ -448,12 +448,12 @@ document.getElementById('cond-list').addEventListener('input', function(e) {
   onInput();
 });
 
-// ── Static button wiring ───────────────────────────────────────────────────
+// -- Static button wiring -------------------------------------------------------
 document.getElementById('add-cond-btn').addEventListener('click', function() { addCondition(); });
 document.getElementById('save-btn').addEventListener('click', function() { save(); });
 document.getElementById('cancel-btn').addEventListener('click', function() { cancel(); });
 
-// ── Initialise ─────────────────────────────────────────────────────────────
+// -- Initialise -----------------------------------------------------------------
 var INITIAL_DATA = ${initialJson};
 if (INITIAL_DATA) {
   document.getElementById('sig-id').value = INITIAL_DATA.id || '';

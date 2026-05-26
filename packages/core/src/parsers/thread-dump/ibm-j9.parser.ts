@@ -2,6 +2,18 @@ import { ThreadDumpSignals, ThreadState, StackFingerprint } from '../../types/si
 
 const GC_THREAD_PATTERN = /^(GC |MM |Finaliz|J9VMGCCompact|MemoryAlarm|GCWorker)/i;
 
+const JVM_PREFIXES = [
+  'java/', 'jdk/', 'sun/', 'com/sun/', 'javax/',
+  'java.', 'jdk.', 'sun.', 'com.sun.', 'javax.',
+];
+
+function computeKeyFrame(frames: string[]): string {
+  for (const frame of frames) {
+    if (!JVM_PREFIXES.some(p => frame.startsWith(p))) return frame;
+  }
+  return frames[0] ?? '';
+}
+
 interface RawThread {
   name: string;
   state: ThreadState;
@@ -92,12 +104,17 @@ function buildFingerprints(threads: RawThread[]): StackFingerprint[] {
   }
 
   return Array.from(map.entries())
-    .map(([key, group]) => ({
-      signature: key,
-      count: group.length,
-      topFrame: group[0].frames[0] ?? '',
-      state: group[0].state,
-      threadNames: group.map(t => t.name)
-    }))
+    .map(([key, group]) => {
+      const frames = group[0].frames;
+      return {
+        signature: key,
+        count: group.length,
+        topFrame: frames[0] ?? '',
+        keyFrame: computeKeyFrame(frames),
+        frames: frames.slice(0, 8),
+        state: group[0].state,
+        threadNames: group.map(t => t.name)
+      };
+    })
     .sort((a, b) => b.count - a.count);
 }

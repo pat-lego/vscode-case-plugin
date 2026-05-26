@@ -1,41 +1,46 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { parseThreadDump, extractSignals } from '@incident-investigator/core';
 import { AnalysisService, extractTimestamp } from '../services/analysis-service';
+import { IILogger, nullLogger } from '../logger';
 
 export class StaticAnalysisPanel {
-  static show(_context: vscode.ExtensionContext, analysisService: AnalysisService) {
+  static show(_context: vscode.ExtensionContext, analysisService: AnalysisService, log: IILogger = nullLogger) {
     const panel = vscode.window.createWebviewPanel(
       'investigator.staticAnalysis',
       'Static Analysis',
       vscode.ViewColumn.Beside,
-      { enableScripts: true }
+      { enableScripts: true, retainContextWhenHidden: true }
     );
 
-    const nonce = crypto.randomBytes(16).toString('hex');
-    panel.webview.html = buildHtml(nonce);
+    panel.webview.html = buildHtml();
 
-    panel.webview.onDidReceiveMessage(async (msg: Record<string, unknown>) => {
+    const handleMessage = async (msg: Record<string, unknown>) => {
       if (msg.type === 'browse') {
-        const uris = await vscode.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: false,
-          canSelectMany: true,
-          openLabel: 'Add',
-          title: String(msg.title ?? 'Select Files'),
-          filters: {
-            'Text & Dump Files': ['txt', 'log', 'dump', 'tdump', 'jfr', 'out', 'xml', 'json', 'csv'],
-            'All Files': ['*']
-          }
-        });
-        if (uris?.length) {
-          panel.webview.postMessage({
-            type: 'filesAdded',
-            section: msg.section,
-            files: uris.map(u => ({ path: u.fsPath, name: path.basename(u.fsPath) }))
+        log.info('analysis', 'static-analysis browse request', { section: msg.section });
+        try {
+          const uris = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: true,
+            openLabel: 'Add',
+            filters: {
+              'Text & Dump Files': ['txt', 'log', 'dump', 'tdump', 'jfr', 'out', 'xml', 'json', 'csv'],
+              'All Files': ['*']
+            }
           });
+          log.info('analysis', 'static-analysis browse result', { section: msg.section, count: uris?.length ?? 0 });
+          if (uris?.length) {
+            panel.webview.postMessage({
+              type: 'filesAdded',
+              section: msg.section,
+              files: uris.map(u => ({ path: u.fsPath, name: path.basename(u.fsPath) }))
+            });
+          }
+        } catch (err) {
+          log.error('analysis', 'static-analysis browse failed', { err: String(err) });
+          vscode.window.showErrorMessage(`Failed to open file picker: ${err}`);
         }
       }
 
@@ -64,12 +69,14 @@ export class StaticAnalysisPanel {
           const extracted = extractSignals(signals);
           const { summary, threadDumps } = extracted;
 
-          // Top blocked/waiting stack fingerprints
+          // Top blocked/waiting stack fingerprints — use keyFrame (first non-JVM frame)
+          // instead of topFrame (which is always Unsafe.park or similar) for display.
           const topFingerprints = (summary.dominantFingerprints ?? [])
             .filter(fp => fp.state === 'BLOCKED' || fp.state === 'WAITING' || fp.state === 'TIMED_WAITING')
             .slice(0, 8)
             .map(fp => ({
-              topFrame: fp.topFrame,
+              topFrame: fp.keyFrame || fp.topFrame,
+              frames: fp.frames ?? [],
               count: fp.count,
               state: fp.state,
               threadNames: fp.threadNames.slice(0, 6)
@@ -97,6 +104,9 @@ export class StaticAnalysisPanel {
             totalThreadCount: summary.totalThreadCount,
             blockedThreadCount: summary.blockedThreadCount,
             waitingThreadCount: summary.waitingThreadCount,
+            timedWaitingThreadCount: summary.timedWaitingThreadCount,
+            suspiciousTimedWaitingCount: summary.suspiciousTimedWaitingCount,
+            suspiciousTimedWaitingKeyFrame: summary.suspiciousTimedWaitingKeyFrame,
             topFingerprints,
             topMonitors
           };
@@ -115,17 +125,18 @@ export class StaticAnalysisPanel {
           parseErrors
         });
       }
-    });
+    };
+
+    panel.webview.onDidReceiveMessage(msg => { void handleMessage(msg as Record<string, unknown>); });
   }
 }
 
-function buildHtml(nonce: string): string {
+function buildHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <title>Static Analysis</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -190,7 +201,10 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
 </style>
 </head>
 <body>
-<h1>Static Analysis</h1>
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+  <h1 style="margin-bottom:0">Static Analysis</h1>
+  <span id="js-status" style="font-size:9px;padding:1px 6px;border-radius:2px;background:#f14c4c22;color:#f14c4c;border:1px solid #f14c4c44">JS not loaded</span>
+</div>
 <p class="subtitle">
   Select files for each category below, then click <strong>Run Analysis</strong>.<br>
   Thread dumps are matched against your signature library. Logs and top output are recorded as context.
@@ -202,7 +216,7 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
     <span class="section-badge td-badge">TD</span>
     <div class="section-meta">
       <div class="section-title">Thread Dumps</div>
-      <div class="section-desc">Java thread dump files — parsed and matched against signatures.</div>
+      <div class="section-desc">Java thread dump files &mdash; parsed and matched against signatures.</div>
       <div class="section-exts">.txt &nbsp;&middot;&nbsp; .log &nbsp;&middot;&nbsp; .tdump &nbsp;&middot;&nbsp; .jfr &nbsp;&middot;&nbsp; .dump</div>
     </div>
   </div>
@@ -217,7 +231,7 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
     <span class="section-badge log-badge">LOG</span>
     <div class="section-meta">
       <div class="section-title">Log Files</div>
-      <div class="section-desc">Application, server, or GC log files — recorded as investigation context.</div>
+      <div class="section-desc">Application, server, or GC log files &mdash; recorded as investigation context.</div>
       <div class="section-exts">.txt &nbsp;&middot;&nbsp; .log &nbsp;&middot;&nbsp; .out &nbsp;&middot;&nbsp; .xml &nbsp;&middot;&nbsp; .json</div>
     </div>
   </div>
@@ -232,7 +246,7 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
     <span class="section-badge top-badge">TOP</span>
     <div class="section-meta">
       <div class="section-title">Top / vmstat / iostat Output</div>
-      <div class="section-desc">System resource snapshots — recorded as investigation context.</div>
+      <div class="section-desc">System resource snapshots &mdash; recorded as investigation context.</div>
       <div class="section-exts">.txt &nbsp;&middot;&nbsp; .log &nbsp;&middot;&nbsp; .out</div>
     </div>
   </div>
@@ -254,15 +268,12 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
   <div id="thread-details"></div>
 </div>
 
-<script nonce="${nonce}">
-window.onerror = function(msg, src, line) {
-  var b = document.createElement('div');
-  b.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#f14c4c;color:#fff;padding:6px 10px;font-size:11px;z-index:9999;font-family:monospace';
-  b.textContent = 'JS Error (line ' + line + '): ' + msg;
-  document.body.prepend(b);
-};
-
-const vscode = acquireVsCodeApi();
+<script>
+(function() {
+  var s = document.getElementById('js-status');
+  if (s) { s.textContent = 'JS ready'; s.style.background = '#4ec9b022'; s.style.color = '#4ec9b0'; s.style.borderColor = '#4ec9b044'; }
+})();
+var vscode = acquireVsCodeApi();
 var files = { threadDumps: [], logs: [], topOutputs: [] };
 
 function renderChips(section) {
@@ -321,7 +332,7 @@ var BROWSE_TITLES = {
 // Run button
 document.getElementById('run-btn').addEventListener('click', function() {
   this.disabled = true;
-  this.textContent = 'Analyzing…';
+  this.textContent = 'Analyzing...';
   vscode.postMessage({ type: 'analyze', threadDumps: files.threadDumps, logs: files.logs, topOutputs: files.topOutputs });
 });
 
@@ -394,18 +405,22 @@ function renderResults(m) {
 
     // Stats row
     html += '<div class="summary-box" style="margin-bottom:12px"><div class="summary-row">';
-    html += '<strong>' + td.totalThreadCount + '</strong>&nbsp;total threads &nbsp;·&nbsp; ';
-    html += '<span style="color:#f14c4c;font-weight:700">' + td.blockedThreadCount + ' BLOCKED</span> &nbsp;·&nbsp; ';
-    html += '<span style="color:#cca700;font-weight:700">' + td.waitingThreadCount + ' WAITING</span>';
+    html += '<strong>' + td.totalThreadCount + '</strong>&nbsp;total &nbsp;&middot;&nbsp; ';
+    html += '<span style="color:#f14c4c;font-weight:700">' + td.blockedThreadCount + ' BLOCKED</span> &nbsp;&middot;&nbsp; ';
+    html += '<span style="color:#cca700;font-weight:700">' + td.waitingThreadCount + ' WAITING</span> &nbsp;&middot;&nbsp; ';
+    html += '<span style="color:#cca700;font-weight:700">' + (td.timedWaitingThreadCount || 0) + ' TIMED_WAITING</span>';
+    if (td.suspiciousTimedWaitingCount > 0) {
+      html += '<br><span style="color:#f14c4c;font-size:10px;margin-top:4px;display:inline-block">&#9888; ' + td.suspiciousTimedWaitingCount + ' stuck TIMED_WAITING threads detected</span>';
+    }
     html += '</div></div>';
 
-    // Dominant stacks
+    // Dominant stacks - keyFrame shown (first non-JVM frame), plus stack snippet
     if (td.topFingerprints && td.topFingerprints.length) {
       html += '<div class="thread-section">';
       html += '<div class="thread-section-hdr">Dominant Blocked / Waiting Stacks</div>';
       td.topFingerprints.forEach(function(fp) {
         var stateClass = 'state-' + fp.state;
-        var names = (fp.threadNames || []).join(', ');
+        var names = (fp.threadNames || []).join('\\n');
         html += '<div class="thread-row">';
         html += '<div class="thread-meta">';
         html += '<span class="state-tag ' + stateClass + '">' + esc(fp.state) + '</span>';
@@ -414,8 +429,15 @@ function renderResults(m) {
         if (fp.topFrame) {
           html += '<div class="thread-frame">' + esc(fp.topFrame) + '</div>';
         }
+        // Stack snippet (top 5 non-JVM frames)
+        if (fp.frames && fp.frames.length > 1) {
+          var snippet = fp.frames.slice(0, 6).map(function(f) { return '  at ' + f; }).join('\\n');
+          html += '<details style="margin-top:4px"><summary style="font-size:10px;color:var(--vscode-descriptionForeground);cursor:pointer">stack snippet</summary>';
+          html += '<div class="thread-frame" style="margin-top:4px;white-space:pre">' + esc(snippet) + '</div></details>';
+        }
         if (names) {
-          html += '<div class="thread-names">Threads: ' + esc(names) + (fp.threadNames.length < fp.count ? ' …' : '') + '</div>';
+          html += '<details style="margin-top:3px"><summary style="font-size:10px;color:var(--vscode-descriptionForeground);cursor:pointer">thread names (' + fp.threadNames.length + (fp.threadNames.length < fp.count ? '+' : '') + ')</summary>';
+          html += '<div class="thread-names" style="white-space:pre-wrap">' + esc(names) + '</div></details>';
         }
         html += '</div>';
       });

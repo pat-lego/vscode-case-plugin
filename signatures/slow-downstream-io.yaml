@@ -1,0 +1,54 @@
+id: slow-downstream-io
+name: Downstream I/O Blocking / External Service Saturation
+description: >
+  Multiple threads are stalled inside active network I/O calls to a downstream
+  system (database, external API) rather than waiting on a Java lock or connection
+  pool entry. In a thread dump this appears as many RUNNABLE threads whose top
+  frames are native socket-read operations (NioSocketImpl.poll,
+  SocketInputStream.read, SSLSocketImpl.read). Each thread has already acquired
+  its connection but the remote peer has not returned data. High elapsed-time-to-CPU-time
+  ratio per thread is the distinguishing mark.
+
+  Unlike db-pool-exhaustion (threads BLOCKED on pool acquisition) or hot-endpoint
+  (threads executing application logic), these threads are frozen inside the OS
+  network stack waiting on a remote response. Common causes: a slow or overloaded
+  downstream database, an N+1 scan pattern issuing many sequential requests each
+  requiring a full backend traversal, or an upstream client making unbounded
+  recursive calls that individually saturate a downstream service.
+version: "1.0"
+
+conditions:
+  - field: nativeIoBlockedThreadCount
+    operator: gte
+    value: 5
+    description: >
+      The number of RUNNABLE threads whose top frame is a native socket-read
+      operation (NioSocketImpl.poll, SocketInputStream.read, SSLSocketImpl.read,
+      or SocketImpl.socketRead). Under normal load a small number of threads may
+      be in socket reads; 5 or more at the same moment indicates the downstream
+      system is not keeping up.
+  - field: elapsedCpuRatio
+    operator: gte
+    value: 10
+    description: >
+      Elapsed wall-clock time divided by CPU time for the affected threads.
+      A ratio above 10 means the thread is spending at least 90% of its lifetime
+      waiting for I/O rather than executing — a strong signal that the bottleneck
+      is downstream latency rather than local compute.
+
+indicators:
+  - "Affected threads are RUNNABLE but top frames are native socket reads, not application code"
+  - "elapsed time >> cpu time on the blocking threads (ratio > 10)"
+  - "Stack traces show a downstream driver or client lib (MongoDB, JDBC, HTTP client) just below the socket frame"
+  - "Pattern persists across multiple consecutive dumps — not a transient spike"
+
+nextSteps:
+  - "Identify the downstream system from the stack frame just below the socket read (e.g. MongoDocumentStore, HikariProxyConnection)"
+  - "Check whether the caller is performing an N+1 access pattern — one request per item instead of a bulk/recursive query"
+  - "Review the downstream system's own metrics for query latency, queue depth, or thread saturation"
+  - "Check if a depth or concurrency limit is absent on the calling side, allowing unbounded fan-out"
+  - "Consider adding a minimum backoff or batch endpoint on the caller to reduce per-item request volume"
+
+relatedSignatures:
+  - db-pool-exhaustion
+  - hot-endpoint

@@ -29,6 +29,8 @@ export function parseGeneric(raw: string, capturedAt: Date): ThreadDumpSignals {
     signature: frames.slice(0, 3).join('|'),
     count: totalThreadCount,
     topFrame: frames[0] ?? '',
+    keyFrame: frames[0] ?? '',
+    frames: frames.slice(0, 8),
     state: 'RUNNABLE',
     threadNames: []
   };

@@ -17,4 +17,5 @@ export interface EvidenceItem {
   capturedAt: Date;
   filePath: string;
   rawContent?: string;
+  group?: string;
 }

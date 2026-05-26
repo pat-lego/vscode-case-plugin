@@ -20,7 +20,15 @@ export interface StackFingerprint {
   signature: string;
   count: number;
   urlPattern?: string;
+  /** Raw top-of-stack frame (often a JVM internal like Unsafe.park — rarely useful alone). */
   topFrame: string;
+  /**
+   * First non-JVM frame in the stack — the real entry point.
+   * e.g. "org.apache.http.pool.AbstractConnPool.getPoolEntryBlocking" instead of "Unsafe.park".
+   */
+  keyFrame: string;
+  /** Top 8 frames kept for snippet display in the UI. */
+  frames: string[];
   state: ThreadState;
   threadNames: string[];
 }

@@ -104,7 +104,7 @@ input:focus,textarea:focus{outline:1px solid var(--vscode-focusBorder);border-co
 </div>
 
 <div class="section">
-  <label>Conditions from evidence — uncheck any that are coincidental</label>
+  <label>Conditions from evidence &mdash; uncheck any that are coincidental</label>
   <div class="cond-list" id="cond-list"></div>
   <div class="hint">Only checked conditions will be saved to the signature.</div>
 </div>

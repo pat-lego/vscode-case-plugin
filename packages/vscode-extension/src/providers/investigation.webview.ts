@@ -95,7 +95,8 @@ export class InvestigationWebview {
             type: e.type,
             timestamp: e.capturedAt instanceof Date && !isNaN(e.capturedAt.getTime())
               ? e.capturedAt.toISOString()
-              : new Date().toISOString()
+              : new Date().toISOString(),
+            group: e.group
           })),
           findings: session.findings,
           notes: session.meta.notes ?? ''
@@ -120,16 +121,49 @@ export class InvestigationWebview {
         });
         if (!uris?.length) return;
         const caseDir = this.caseManager.getCaseDir(caseId);
+
+        // Separate folders from files; group files sharing the same parent dir
+        const filesByDir = new Map<string, string[]>();
+        const folderPaths: string[] = [];
         for (const uri of uris) {
-          const stat = fs.statSync(uri.fsPath);
+          let stat: import('fs').Stats;
+          try { stat = fs.statSync(uri.fsPath); } catch { continue; }
           if (stat.isDirectory()) {
-            this.addFolderEvidence(caseId, uri.fsPath, caseDir, panel);
+            folderPaths.push(uri.fsPath);
           } else {
-            const added = this.addFileEvidence(caseId, uri.fsPath, caseDir);
+            const dir = path.dirname(uri.fsPath);
+            if (!filesByDir.has(dir)) filesByDir.set(dir, []);
+            filesByDir.get(dir)!.push(uri.fsPath);
+          }
+        }
+
+        for (const [dir, filePaths] of filesByDir) {
+          const group = filePaths.length >= 2 ? path.basename(dir) : undefined;
+          for (const filePath of filePaths) {
+            const added = this.addFileEvidence(caseId, filePath, caseDir, group);
             if (added) panel.webview.postMessage({ type: 'evidenceAdded', item: added.item });
             if (added?.findings?.length) panel.webview.postMessage({ type: 'findings', findings: added.findings });
           }
         }
+
+        for (const folderPath of folderPaths) {
+          this.addFolderEvidence(caseId, folderPath, caseDir, panel);
+        }
+        break;
+      }
+
+      case 'deleteGroup': {
+        const group = String(msg.group);
+        const session = this.caseManager.getSession(caseId);
+        if (!session) return;
+        const ids = session.meta.evidence.filter(e => e.group === group).map(e => e.id);
+        for (const id of ids) { this.caseManager.removeEvidence(caseId, id); }
+        const s2 = this.caseManager.getSession(caseId);
+        if (s2) {
+          const findings = this.analysisService.rerun([...s2.threadDumpSignals.values()]);
+          this.caseManager.updateFindings(caseId, findings);
+        }
+        panel.webview.postMessage({ type: 'groupRemoved', group });
         break;
       }
 
@@ -226,7 +260,7 @@ export class InvestigationWebview {
     }
   }
 
-  private addFileEvidence(caseId: string, filePath: string, caseDir: string | undefined): { item: { id: string; name: string; type: string; timestamp: string }; findings?: unknown[] } | null {
+  private addFileEvidence(caseId: string, filePath: string, caseDir: string | undefined, group?: string): { item: { id: string; name: string; type: string; timestamp: string; group?: string }; findings?: unknown[] } | null {
     const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml']);
     const ext = path.extname(filePath).toLowerCase();
     const name = path.basename(filePath);
@@ -235,8 +269,9 @@ export class InvestigationWebview {
       try {
         const content = fs.readFileSync(filePath, 'utf-8');
         const { evidenceItem, findings } = this.analysisService.processEvidence(caseId, name, content, filePath);
+        if (group) this.caseManager.setEvidenceGroup(caseId, evidenceItem.id, group);
         return {
-          item: { id: evidenceItem.id, name, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString() },
+          item: { id: evidenceItem.id, name, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString(), group },
           findings
         };
       } catch { return null; }
@@ -260,9 +295,10 @@ export class InvestigationWebview {
       source: 'local-file' as const,
       capturedAt: new Date(),
       filePath: destPath,
+      ...(group ? { group } : {}),
     };
     this.caseManager.addEvidence(caseId, item as import('@incident-investigator/core').EvidenceItem);
-    return { item: { id: item.id, name, type, timestamp: item.capturedAt.toISOString() } };
+    return { item: { id: item.id, name, type, timestamp: item.capturedAt.toISOString(), group } };
   }
 
   private addFolderEvidence(caseId: string, folderPath: string, caseDir: string | undefined, panel: vscode.WebviewPanel) {
@@ -291,7 +327,8 @@ export class InvestigationWebview {
             try {
               const content = fs.readFileSync(srcPath, 'utf-8');
               const { evidenceItem, findings } = this.analysisService.processEvidence(caseId, entry.name, content, destPath);
-              panel.webview.postMessage({ type: 'evidenceAdded', item: { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString() } });
+              this.caseManager.setEvidenceGroup(caseId, evidenceItem.id, folderName);
+              panel.webview.postMessage({ type: 'evidenceAdded', item: { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString(), group: folderName } });
               if (findings.length) panel.webview.postMessage({ type: 'findings', findings });
             } catch {}
           } else {
@@ -303,9 +340,10 @@ export class InvestigationWebview {
               source: 'local-file' as const,
               capturedAt: new Date(),
               filePath: destPath,
+              group: folderName,
             };
             this.caseManager.addEvidence(caseId, item as import('@incident-investigator/core').EvidenceItem);
-            panel.webview.postMessage({ type: 'evidenceAdded', item: { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString() } });
+            panel.webview.postMessage({ type: 'evidenceAdded', item: { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString(), group: folderName } });
           }
         }
       }
@@ -365,6 +403,18 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .ev-del{opacity:0;pointer-events:none;background:none;border:none;color:var(--vscode-descriptionForeground);cursor:pointer;padding:0 3px;font-size:14px;line-height:1;flex-shrink:0}
 .ev-del:hover{color:var(--vscode-errorForeground)}
 .ev-item:hover .ev-del{opacity:1;pointer-events:auto}
+.ev-group{border:1px solid var(--vscode-panel-border);border-radius:3px;margin-bottom:4px;overflow:hidden}
+.ev-group-hdr{display:flex;align-items:center;gap:5px;padding:4px 6px;cursor:pointer;font-size:11px;user-select:none;background:var(--vscode-sideBar-background)}
+.ev-group-hdr:hover{background:var(--vscode-list-hoverBackground)}
+.ev-group-icon{font-size:9px;color:var(--vscode-descriptionForeground);transition:transform .12s;flex-shrink:0;line-height:1}
+.ev-group.collapsed .ev-group-icon{transform:rotate(-90deg)}
+.ev-group-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-weight:600}
+.ev-group-cnt{font-size:9px;padding:1px 5px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-radius:8px;flex-shrink:0}
+.ev-group-del{opacity:0;pointer-events:none;background:none;border:none;color:var(--vscode-descriptionForeground);cursor:pointer;padding:0 3px;font-size:11px;flex-shrink:0;line-height:1}
+.ev-group-del:hover{color:var(--vscode-errorForeground)}
+.ev-group-hdr:hover .ev-group-del{opacity:.7;pointer-events:auto}
+.ev-group-body{padding:2px 0 2px 8px}
+.ev-group.collapsed .ev-group-body{display:none}
 .empty{text-align:center;padding:24px 12px;font-size:11px;color:var(--vscode-descriptionForeground);line-height:1.6}
 .analysis-section{border-top:1px solid var(--vscode-panel-border);margin-top:8px;padding-top:6px;display:none}
 .analysis-hdr{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground);padding:3px 4px;cursor:pointer;display:flex;align-items:center;gap:5px;user-select:none;border-radius:2px}
@@ -429,7 +479,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 </head>
 <body>
 <div class="header">
-  <h2>${caseId} — <span id="case-title" contenteditable="true" spellcheck="false">${title}</span></h2>
+  <h2>${caseId} &mdash; <span id="case-title" contenteditable="true" spellcheck="false">${title}</span></h2>
   <div class="header-right">
     <div class="bridge"><div class="dot" id="dot"></div><span id="bridge-lbl">Disconnected</span></div>
     <button class="btn" id="resolve-btn">Resolve</button>
@@ -480,6 +530,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 <!-- Context menu for evidence items -->
 <div class="ctx-menu" id="ctx-menu">
   <div class="ctx-item" id="ctx-open">Open in Editor &#x2197;</div>
+  <div class="ctx-item" id="ctx-copy-ref">Copy reference</div>
   <div class="ctx-sep"></div>
   <div class="ctx-item ctx-danger" id="ctx-delete">Delete Evidence</div>
 </div>
@@ -496,8 +547,10 @@ window.onerror = function(msg, src, line) {
 const vscode = acquireVsCodeApi();
 let items = [];
 let saveTimer = null;
+var groupEls = {}; // groupName -> group container element
+var draggingEv = null; // set during evidence drag-and-drop
 
-// ── Layout ────────────────────────────────────────────────────
+// -- Layout ------------------------------------------------------------
 const MIN_W = {evidence: 110, notes: 140, viewer: 200};
 let colOrder = ['evidence', 'notes', 'viewer'];
 var collapsed = {};
@@ -530,11 +583,11 @@ function applyCollapseState(colId) {
   var btn = col ? col.querySelector('.collapse-btn') : null;
   if (collapsed[colId]) {
     if (col) { col.classList.add('collapsed'); col.style.width = ''; col.style.flex = ''; }
-    if (btn) btn.textContent = '›'; // ›
+    if (btn) btn.textContent = '\\u203a'; // >
     if (hdr) hdr.removeAttribute('draggable');
   } else {
     if (col) col.classList.remove('collapsed');
-    if (btn) btn.textContent = '‹'; // ‹
+    if (btn) btn.textContent = '\\u2039'; // <
     if (hdr) hdr.setAttribute('draggable', 'true');
   }
 }
@@ -569,7 +622,7 @@ function loadLayout() {
   }
 }
 
-// ── Resize handles ────────────────────────────────────────────
+// -- Resize handles ------------------------------------------------------------
 handles.forEach(function(handle) {
   if (!handle) return;
   handle.addEventListener('mousedown', function(e) {
@@ -616,7 +669,7 @@ handles.forEach(function(handle) {
   });
 });
 
-// ── Drag-to-reorder ───────────────────────────────────────────
+// -- Drag-to-reorder -----------------------------------------------------------
 var dragSrc = null;
 
 document.querySelectorAll('.col-header[draggable]').forEach(function(header) {
@@ -654,7 +707,7 @@ document.querySelectorAll('.col-header[draggable]').forEach(function(header) {
   });
 });
 
-// ── Collapse delegation ───────────────────────────────
+// -- Collapse delegation -------------------------------------------------------
 document.getElementById('workspace').addEventListener('click', function(e) {
   var btn = e.target && e.target.closest && e.target.closest('.collapse-btn');
   if (!btn || !btn.dataset || !btn.dataset.collapse) return;
@@ -662,9 +715,9 @@ document.getElementById('workspace').addEventListener('click', function(e) {
   toggleCollapse(btn.dataset.collapse);
 });
 
-try { loadLayout(); } catch(e) { /* stale state — ignore, use defaults */ }
+try { loadLayout(); } catch(e) { /* stale state - ignore, use defaults */ }
 
-// ── Messaging ─────────────────────────────────────────────────
+// -- Messaging -----------------------------------------------------------------
 function send(type, extra) { vscode.postMessage(Object.assign({type}, extra||{})); }
 
 window.addEventListener('message', function(evt) {
@@ -683,6 +736,7 @@ window.addEventListener('message', function(evt) {
   }
   else if (m.type === 'evidenceAdded') addEvidence(m.item);
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
+  else if (m.type === 'groupRemoved') removeGroup(m.group);
   else if (m.type === 'findings') renderFindings(m.findings);
   else if (m.type === 'bridgeStatus') setBridge(m.connected);
   else if (m.type === 'evidenceView') renderViewerContent(m.paneId, m.id, m.name, m.content, m.contentType);
@@ -704,7 +758,7 @@ document.getElementById('notes-area').addEventListener('blur', function() {
   doSaveNotes();
 });
 
-// ── Editable case title ───────────────────────────────
+// -- Editable case title -------------------------------------------------------
 var caseTitleEl = document.getElementById('case-title');
 if (caseTitleEl) {
   caseTitleEl.addEventListener('blur', function() {
@@ -722,18 +776,90 @@ function setBridge(on) {
   document.getElementById('bridge-lbl').textContent = on ? 'Bridge connected' : 'Disconnected';
 }
 
+function buildEvidenceRef(item) {
+  var label = (item.group && item.name.indexOf(item.group + '/') === 0)
+    ? item.name.slice(item.group.length + 1)
+    : item.name;
+  return '[' + label + '](./' + item.name + ')';
+}
+
+function insertAtCursor(el, text) {
+  var start = el.selectionStart;
+  var end = el.selectionEnd;
+  var val = el.value;
+  el.value = val.slice(0, start) + text + val.slice(end);
+  el.selectionStart = el.selectionEnd = start + text.length;
+  el.dispatchEvent(new Event('input'));
+  el.focus();
+}
+
+function fallbackCopy(text) {
+  var tmp = document.createElement('textarea');
+  tmp.value = text;
+  tmp.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(tmp);
+  tmp.select();
+  try { document.execCommand('copy'); } catch(err) {}
+  document.body.removeChild(tmp);
+}
+
+// -- Notes drag-drop from evidence list ----------------------------------------
+var notesArea = document.getElementById('notes-area');
+notesArea.addEventListener('dragover', function(e) {
+  if (!draggingEv) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'link';
+});
+notesArea.addEventListener('drop', function(e) {
+  if (!draggingEv) return;
+  e.preventDefault();
+  insertAtCursor(this, buildEvidenceRef(draggingEv));
+});
+
 var TYPE_SHORT = {'thread-dump':'TD','log-export':'LOG','top-output':'TOP','screenshot':'IMG','generic':'FILE'};
+
+function getOrCreateGroup(groupName) {
+  if (groupEls[groupName]) return groupEls[groupName];
+  var grp = document.createElement('div');
+  grp.className = 'ev-group';
+  var hdr = document.createElement('div');
+  hdr.className = 'ev-group-hdr';
+  hdr.innerHTML =
+    '<span class="ev-group-icon">&#x25BE;</span>'+
+    '<span class="ev-group-name">'+esc(groupName)+'</span>'+
+    '<span class="ev-group-cnt">0</span>'+
+    '<button class="ev-group-del" title="Delete group">&#x2715;</button>';
+  hdr.querySelector('.ev-group-del').addEventListener('click', function(e) {
+    e.stopPropagation();
+    send('deleteGroup', { group: groupName });
+  });
+  hdr.addEventListener('click', function(e) {
+    if (e.target.classList.contains('ev-group-del')) return;
+    grp.classList.toggle('collapsed');
+  });
+  var body = document.createElement('div');
+  body.className = 'ev-group-body';
+  grp.appendChild(hdr);
+  grp.appendChild(body);
+  document.getElementById('ev-list').appendChild(grp);
+  groupEls[groupName] = grp;
+  return grp;
+}
 
 function addEvidence(item) {
   items.push(item);
   var t = new Date(item.timestamp);
+  // Within a group, strip the group prefix from the display name
+  var displayName = (item.group && item.name.indexOf(item.group + '/') === 0)
+    ? item.name.slice(item.group.length + 1)
+    : item.name;
   var row = document.createElement('div');
   row.className = 'ev-item';
   row.title = item.name;
   row.dataset.evId = item.id;
   row.innerHTML =
     '<span class="ev-type">'+(TYPE_SHORT[item.type]||'FILE')+'</span>'+
-    '<span class="ev-name">'+esc(item.name)+'</span>'+
+    '<span class="ev-name">'+esc(displayName)+'</span>'+
     '<span class="ev-time">'+fmt(t)+'</span>'+
     '<button class="ev-ext" title="Open in editor">&#x2197;</button>'+
     '<button class="ev-del" title="Remove">&#x2715;</button>';
@@ -752,13 +878,31 @@ function addEvidence(item) {
     openInViewer(item.id, item.name);
   });
 
+  row.draggable = true;
+  row.addEventListener('dragstart', function(e) {
+    draggingEv = item;
+    e.dataTransfer.effectAllowed = 'link';
+    e.dataTransfer.setData('text/plain', buildEvidenceRef(item));
+  });
+  row.addEventListener('dragend', function() { draggingEv = null; });
+
   var wrapper = document.createElement('div');
   wrapper.dataset.evId = item.id;
+  if (item.group) wrapper.dataset.evGroup = item.group;
   wrapper.appendChild(row);
-  document.getElementById('ev-list').appendChild(wrapper);
+
+  if (item.group) {
+    var grp = getOrCreateGroup(item.group);
+    var body = grp.querySelector('.ev-group-body');
+    var cnt = grp.querySelector('.ev-group-cnt');
+    body.appendChild(wrapper);
+    if (cnt) cnt.textContent = String(body.children.length);
+  } else {
+    document.getElementById('ev-list').appendChild(wrapper);
+  }
 }
 
-// ── Multi-pane Viewer ─────────────────────────────────────────
+// -- Multi-pane Viewer ---------------------------------------------------------
 var viewerPanes = []; // [{ paneId, evId, el }]
 
 function openInViewer(evId, name) {
@@ -782,12 +926,12 @@ function openInViewer(evId, name) {
       '<button class="btn pane-close-btn" title="Close pane" style="font-size:10px;padding:1px 5px;text-transform:none;letter-spacing:0;font-weight:400">&#x2715;</button>'+
     '</div>'+
     '<div class="pane-search" id="search-'+paneId+'">'+
-      '<input class="pane-search-input" id="search-input-'+paneId+'" placeholder="Search in file…" autocomplete="off" spellcheck="false">'+
+      '<input class="pane-search-input" id="search-input-'+paneId+'" placeholder="Search in file..." autocomplete="off" spellcheck="false">'+
       '<span class="pane-search-count" id="search-count-'+paneId+'"></span>'+
       '<button class="pane-search-nav pane-search-prev" title="Previous (Shift+Enter)">&#x2191;</button>'+
       '<button class="pane-search-nav pane-search-next" title="Next (Enter)">&#x2193;</button>'+
     '</div>'+
-    '<div class="viewer-content" id="vcontent-'+paneId+'"><div class="viewer-empty">Loading…</div></div>';
+    '<div class="viewer-content" id="vcontent-'+paneId+'"><div class="viewer-empty">Loading...</div></div>';
 
   el.querySelector('.pane-open-btn').addEventListener('click', function() {
     extOpenPane(paneId);
@@ -843,7 +987,7 @@ function markActiveEv(evId) {
   });
 }
 
-var paneRawText = {}; // paneId → original text, kept for re-search without re-fetch
+var paneRawText = {}; // paneId -> original text, kept for re-search without re-fetch
 
 function renderViewerContent(paneId, evId, name, content, contentType) {
   var contentEl = document.getElementById('vcontent-' + paneId);
@@ -892,7 +1036,7 @@ function runPaneSearch(paneId) {
     html += '<mark class="search-match">' + esc(rawText.slice(idx, idx + query.length)) + '</mark>';
     count++;
     i = idx + query.length;
-    if (lowerQ.length === 0) break; // safety — empty query already handled above
+    if (lowerQ.length === 0) break; // safety - empty query already handled above
   }
   contentEl.innerHTML = '<pre>' + html + '</pre>';
   contentEl.dataset.matchIdx = '0';
@@ -925,11 +1069,37 @@ function navPaneMatch(paneId, dir) {
 function removeEvidence(id) {
   items = items.filter(function(i) { return i.id !== id; });
   var wrapper = document.querySelector('[data-ev-id="'+id+'"]');
-  if (wrapper) wrapper.remove();
-  // Close any viewer panes showing this evidence
+  if (wrapper) {
+    var groupName = wrapper.dataset.evGroup;
+    wrapper.remove();
+    if (groupName && groupEls[groupName]) {
+      var grp = groupEls[groupName];
+      var body = grp.querySelector('.ev-group-body');
+      var cnt = grp.querySelector('.ev-group-cnt');
+      if (body) {
+        if (cnt) cnt.textContent = String(body.children.length);
+        if (body.children.length === 0) { grp.remove(); delete groupEls[groupName]; }
+      }
+    }
+  }
   viewerPanes.filter(function(p) { return p.evId === id; })
     .map(function(p) { return p.paneId; })
     .forEach(function(pid) { closePane(null, pid); });
+}
+
+function removeGroup(groupName) {
+  var grp = groupEls[groupName];
+  if (!grp) return;
+  var wrappers = grp.querySelectorAll('[data-ev-id]');
+  wrappers.forEach(function(w) {
+    var evId = w.dataset.evId;
+    items = items.filter(function(i) { return i.id !== evId; });
+    viewerPanes.filter(function(p) { return p.evId === evId; })
+      .map(function(p) { return p.paneId; })
+      .forEach(function(pid) { closePane(null, pid); });
+  });
+  grp.remove();
+  delete groupEls[groupName];
 }
 
 function delEvidence(e, id) {
@@ -942,7 +1112,7 @@ function openInEditor(e, id) {
   send('openEvidence', { id: id });
 }
 
-// ── Context menu ──────────────────────────────────────────────
+// -- Context menu --------------------------------------------------------------
 var ctxEvId = null;
 var ctxMenu = document.getElementById('ctx-menu');
 
@@ -971,13 +1141,29 @@ document.getElementById('ctx-open').addEventListener('click', function(e) {
   hideCtxMenu();
 });
 
+document.getElementById('ctx-copy-ref').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (ctxEvId) {
+    var it = items.find(function(i) { return i.id === ctxEvId; });
+    if (it) {
+      var ref = buildEvidenceRef(it);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(ref).catch(function() { fallbackCopy(ref); });
+      } else {
+        fallbackCopy(ref);
+      }
+    }
+  }
+  hideCtxMenu();
+});
+
 document.getElementById('ctx-delete').addEventListener('click', function(e) {
   e.stopPropagation();
   if (ctxEvId) send('deleteEvidence', { id: ctxEvId });
   hideCtxMenu();
 });
 
-// ── Analysis section ──────────────────────────────────────────
+// -- Analysis section ----------------------------------------------------------
 var analysisOpen = false;
 
 function toggleAnalysis() {

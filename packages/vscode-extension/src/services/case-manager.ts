@@ -111,6 +111,13 @@ export class CaseManager {
     this.onCaseUpdatedEmitter.fire(caseId);
   }
 
+  setEvidenceGroup(caseId: string, evidenceId: string, group: string) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+    const ev = session.meta.evidence.find(e => e.id === evidenceId);
+    if (ev) { ev.group = group; this.save(caseId); }
+  }
+
   updateFindings(caseId: string, findings: Finding[]) {
     const session = this.sessions.get(caseId);
     if (!session) return;
@@ -375,6 +382,7 @@ export class CaseManager {
           source: String(raw['source'] ?? ''),
           capturedAt: isNaN(capturedAtRaw.getTime()) ? new Date() : capturedAtRaw,
           filePath: String(raw['file_path'] ?? ''),
+          ...(raw['group'] ? { group: String(raw['group']) } : {}),
         };
         if (raw['stored_file']) {
           const storedPath = path.join(caseDir, String(raw['stored_file']));
@@ -477,6 +485,7 @@ export class CaseManager {
           captured_at: ev.capturedAt.toISOString(),
           file_path: ev.filePath,
           stored_file: storedFile,
+          ...(ev.group ? { group: ev.group } : {}),
         };
       });
 

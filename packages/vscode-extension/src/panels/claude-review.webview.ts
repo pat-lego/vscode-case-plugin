@@ -177,7 +177,7 @@ textarea:focus{outline:1px solid var(--vscode-focusBorder)}
 </style>
 </head>
 <body>
-<h2>Claude Case Review — ${caseId}</h2>
+<h2>Claude Case Review &mdash; ${caseId}</h2>
 
 <div>
   <label>Context sent to Claude (you can edit before sending)</label>
@@ -187,7 +187,7 @@ textarea:focus{outline:1px solid var(--vscode-focusBorder)}
 <div class="actions">
   <button class="btn primary" id="run-btn" onclick="run()">Run Review</button>
   <button class="btn" onclick="cancel()">Cancel</button>
-  <span class="spinner" id="spinner">Analysing…</span>
+  <span class="spinner" id="spinner">Analysing...</span>
 </div>
 
 <div>
@@ -213,7 +213,7 @@ function run(){
   if(!prompt)return;
   document.getElementById('spinner').style.display='inline';
   document.getElementById('run-btn').disabled=true;
-  document.getElementById('result').textContent='Waiting for response…';
+  document.getElementById('result').textContent='Waiting for response...';
   vscode.postMessage({type:'runReview',prompt});
 }
 function cancel(){vscode.postMessage({type:'cancel'});}

@@ -21,8 +21,21 @@ export interface ThreadDumpSummary {
   avgThreadCount: number;
   /** Maximum number of BLOCKED threads observed in any single dump. */
   blockedThreadCount: number;
-  /** Maximum number of WAITING/TIMED_WAITING threads observed in any single dump. */
+  /** Maximum number of WAITING threads observed in any single dump (excludes TIMED_WAITING). */
   waitingThreadCount: number;
+  /** Maximum number of TIMED_WAITING threads observed in any single dump. */
+  timedWaitingThreadCount: number;
+  /**
+   * Thread count of the dominant TIMED_WAITING fingerprint that is NOT an idle pool pattern.
+   * Idle patterns (Jetty workers polling queues, scheduler idle threads, JVM cleaner, etc.)
+   * are excluded so only genuinely stuck TIMED_WAITING threads are counted.
+   */
+  suspiciousTimedWaitingCount: number;
+  /**
+   * Key frame (first non-JVM frame) of the dominant suspicious TIMED_WAITING fingerprint.
+   * Empty string when suspiciousTimedWaitingCount is 0.
+   */
+  suspiciousTimedWaitingKeyFrame: string;
   /** Maximum number of IO-bound threads observed in any single dump. */
   ioThreadCount: number;
   /** Maximum number of JVM GC subsystem threads observed in any single dump. */
@@ -66,9 +79,10 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
   const totalThreadCount = Math.max(...dumps.map(d => d.totalThreadCount));
   const avgThreadCount = dumps.reduce((s, d) => s + d.totalThreadCount, 0) / dumps.length;
 
-  const blockedThreadCount = Math.max(...dumps.map(d => d.stateCounts.BLOCKED ?? 0));
-  const waitingThreadCount = Math.max(...dumps.map(d => d.stateCounts.WAITING ?? 0));
-  const ioThreadCount = Math.max(...dumps.map(d => d.ioThreadCount));
+  const blockedThreadCount    = Math.max(...dumps.map(d => d.stateCounts.BLOCKED       ?? 0));
+  const waitingThreadCount    = Math.max(...dumps.map(d => d.stateCounts.WAITING       ?? 0));
+  const timedWaitingThreadCount = Math.max(...dumps.map(d => d.stateCounts.TIMED_WAITING ?? 0));
+  const ioThreadCount         = Math.max(...dumps.map(d => d.ioThreadCount));
   const gcThreadCount = Math.max(...dumps.map(d => d.gcThreadCount));
 
   const fingerprintMap = new Map<string, StackFingerprint[]>();
@@ -123,6 +137,41 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
     }
   }
 
+  // Identify TIMED_WAITING fingerprints that are NOT idle-pool patterns.
+  // Known idle patterns: Jetty workers polling for jobs, scheduled-task executors waiting
+  // for the next fire time, JVM cleaner/reference threads, OSGi framework gates, etc.
+  const IDLE_TIMED_WAITING_KEY_FRAMES = [
+    'BlockingArrayQueue',            // Jetty QueuedThreadPool idle worker
+    'DelayedWorkQueue',              // ScheduledThreadPoolExecutor idle
+    'LinkedBlockingQueue.take',      // ThreadPoolExecutor idle worker
+    'ThreadGate.await',              // Apache Felix OSGi framework wait
+    'ReferenceQueue',                // JVM reference-processing
+    'CleanerImpl',                   // JVM Cleaner thread
+    'ForkJoinPool.awaitWork',        // ForkJoinPool idle worker
+    'AbstractEventExecutor',         // Netty event loop idle
+    'NioEventLoop',                  // Netty NIO idle
+    'EventDispatcher',               // Felix event dispatcher idle
+    'ThreadPoolExecutor.getTask',    // Generic thread-pool worker waiting for work
+  ];
+
+  let suspiciousTimedWaitingCount = 0;
+  let suspiciousTimedWaitingKeyFrame = '';
+  for (const dump of dumps) {
+    for (const fp of dump.stackFingerprints) {
+      if (fp.state !== 'TIMED_WAITING') continue;
+      const kf = fp.keyFrame ?? fp.topFrame;
+      // Check keyFrame AND all stored frames — idle-pool threads (ScheduledThreadPoolExecutor,
+      // Jetty, etc.) often have all-JDK stacks so keyFrame falls back to Unsafe.park, but the
+      // idle pattern is still visible deeper in the frames array.
+      const allFrameText = [kf, ...fp.frames].join('\n');
+      if (IDLE_TIMED_WAITING_KEY_FRAMES.some(p => allFrameText.includes(p))) continue;
+      if (fp.count > suspiciousTimedWaitingCount) {
+        suspiciousTimedWaitingCount = fp.count;
+        suspiciousTimedWaitingKeyFrame = kf;
+      }
+    }
+  }
+
   const avgIoRatio = dumps.reduce((s, d) => s + d.ioThreadCount / d.totalThreadCount, 0) / dumps.length;
   const blockedMonitorCount = Math.max(...dumps.map(d => d.blockedMonitors.length));
 
@@ -133,6 +182,9 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
       avgThreadCount,
       blockedThreadCount,
       waitingThreadCount,
+      timedWaitingThreadCount,
+      suspiciousTimedWaitingCount,
+      suspiciousTimedWaitingKeyFrame,
       ioThreadCount,
       gcThreadCount,
       dominantFingerprintCount,
@@ -155,6 +207,9 @@ function emptySummary(): ThreadDumpSummary {
     avgThreadCount: 0,
     blockedThreadCount: 0,
     waitingThreadCount: 0,
+    timedWaitingThreadCount: 0,
+    suspiciousTimedWaitingCount: 0,
+    suspiciousTimedWaitingKeyFrame: '',
     ioThreadCount: 0,
     gcThreadCount: 0,
     dominantFingerprintCount: 0,

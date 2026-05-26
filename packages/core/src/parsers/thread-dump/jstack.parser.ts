@@ -54,12 +54,22 @@ function parseThreadBlock(block: string): RawThread | null {
       frames.push(line.replace(/^at\s+/, ''));
     }
 
-    // Capture both the monitor address and the class name from the same lock line:
-    //   - waiting to lock <0xABCD> (a com.example.SomeClass)
+    // Traditional synchronized-block contention: "- waiting to lock <0xABCD> (a ClassName)"
     const lockMatch = line.match(/- waiting to lock <(0x[0-9a-f]+)>(?:\s+\(a ([^)]+)\))?/);
     if (lockMatch) {
       waitingOnMonitor = lockMatch[1];
       if (lockMatch[2]) waitingOnMonitorClass = lockMatch[2];
+    }
+
+    // java.util.concurrent lock contention: "- parking to wait for <0xABCD> (a ConditionObject)"
+    // This pattern appears when threads block on ReentrantLock/Semaphore/etc. instead of
+    // synchronized blocks, and carries the same semantics for analysis purposes.
+    if (!waitingOnMonitor) {
+      const parkMatch = line.match(/- parking to wait for\s+<(0x[0-9a-f]+)>(?:\s+\(a ([^)]+)\))?/);
+      if (parkMatch) {
+        waitingOnMonitor = parkMatch[1];
+        if (parkMatch[2]) waitingOnMonitorClass = parkMatch[2];
+      }
     }
 
     const heldMatch = line.match(/- locked <(0x[0-9a-f]+)>/);
@@ -108,6 +118,20 @@ function buildSignals(threads: RawThread[], capturedAt: Date, format: 'jstack'):
   };
 }
 
+// JVM and standard-library frame prefixes that are not meaningful for diagnosis.
+// The first frame NOT matching these is the "key frame" — the real call site.
+const JVM_PREFIXES = [
+  'java.', 'jdk.', 'sun.', 'com.sun.', 'javax.',
+  '[Ljava.', 'jdk.internal.',
+];
+
+function computeKeyFrame(frames: string[]): string {
+  for (const frame of frames) {
+    if (!JVM_PREFIXES.some(p => frame.startsWith(p))) return frame;
+  }
+  return frames[0] ?? '';
+}
+
 function buildFingerprints(threads: RawThread[]): StackFingerprint[] {
   const map = new Map<string, RawThread[]>();
 
@@ -120,14 +144,19 @@ function buildFingerprints(threads: RawThread[]): StackFingerprint[] {
   }
 
   return Array.from(map.entries())
-    .map(([key, group]) => ({
-      signature: key,
-      count: group.length,
-      urlPattern: extractUrlPattern(group[0].frames),
-      topFrame: group[0].frames[0] ?? '',
-      state: group[0].state,
-      threadNames: group.map(t => t.name)
-    }))
+    .map(([key, group]) => {
+      const frames = group[0].frames;
+      return {
+        signature: key,
+        count: group.length,
+        urlPattern: extractUrlPattern(frames),
+        topFrame: frames[0] ?? '',
+        keyFrame: computeKeyFrame(frames),
+        frames: frames.slice(0, 8),
+        state: group[0].state,
+        threadNames: group.map(t => t.name)
+      };
+    })
     .sort((a, b) => b.count - a.count);
 }
 

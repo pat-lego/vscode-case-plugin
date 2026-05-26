@@ -181,7 +181,7 @@
     "build": "node esbuild.js",
     "build:tsc": "tsc",
     "typecheck": "tsc --noEmit",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies",
+    "package": "npm run build && node scripts/validate-webviews.js && npx @vscode/vsce package --no-dependencies",
     "test": "vitest run",
     "test:watch": "vitest"
   },

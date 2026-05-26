@@ -223,8 +223,8 @@ summary{
   user-select:none;
   list-style:none;
 }
-summary::before{content:"▶ "}
-details[open] summary::before{content:"▼ "}
+summary::before{content:"&#x25B6; "}
+details[open] summary::before{content:"&#x25BC; "}
 pre{
   padding:12px;font-family:var(--vscode-editor-font-family,monospace);
   font-size:12px;line-height:1.5;overflow-x:auto;
@@ -243,9 +243,9 @@ pre{
 
 <div class="conf-legend">
   <span style="font-size:10px;font-weight:600;margin-right:4px">Confidence:</span>
-  <span class="conf-item"><span class="conf-dot conf-high"></span>&ge;80% — High</span>
-  <span class="conf-item"><span class="conf-dot conf-medium"></span>&ge;50% — Medium</span>
-  <span class="conf-item"><span class="conf-dot conf-low"></span>&lt;50% — Low</span>
+  <span class="conf-item"><span class="conf-dot conf-high"></span>&ge;80% &mdash; High</span>
+  <span class="conf-item"><span class="conf-dot conf-medium"></span>&ge;50% &mdash; Medium</span>
+  <span class="conf-item"><span class="conf-dot conf-low"></span>&lt;50% &mdash; Low</span>
 </div>
 
 <p class="description">${esc(sig.description)}</p>
