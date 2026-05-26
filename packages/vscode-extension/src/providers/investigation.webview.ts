@@ -19,6 +19,15 @@ export class InvestigationWebview {
       this.panels.get(caseId)?.webview.postMessage({ type: 'findings', findings });
     });
 
+    // Push external case state changes (e.g. reopen from sidebar, notes heading change) to open panels.
+    this.caseManager.onCaseUpdated(updatedCaseId => {
+      const panel = this.panels.get(updatedCaseId);
+      if (!panel) return;
+      const session = this.caseManager.getSession(updatedCaseId);
+      if (!session) return;
+      panel.webview.postMessage({ type: 'caseUpdated', status: session.meta.status, title: session.meta.title });
+    });
+
     this.bridgeServer.onStatusChange(connected => {
       for (const panel of this.panels.values()) {
         panel.webview.postMessage({ type: 'bridgeStatus', connected });
@@ -668,6 +677,10 @@ window.addEventListener('message', function(evt) {
     updateStatusButton(m.status);
   }
   else if (m.type === 'statusChanged') { updateStatusButton(m.status); }
+  else if (m.type === 'caseUpdated') {
+    updateStatusButton(m.status);
+    if (m.title) { var ct = document.getElementById('case-title'); if (ct) ct.textContent = m.title; }
+  }
   else if (m.type === 'evidenceAdded') addEvidence(m.item);
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
   else if (m.type === 'findings') renderFindings(m.findings);

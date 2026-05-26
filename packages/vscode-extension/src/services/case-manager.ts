@@ -155,11 +155,11 @@ export class CaseManager {
     if (!session) return;
     session.meta.notes = notes;
     session.meta.updatedAt = new Date();
+    // Keep title in sync with the first heading in notes — this is how users
+    // name their cases via markdown headings regardless of readonly status.
+    const heading = extractFirstHeading(notes);
+    if (heading) session.meta.title = heading;
     if (session.readonly) {
-      // For Obsidian notes notes IS the file content — also keep title in sync
-      // with whatever heading the user typed into the notes body.
-      const heading = extractFirstHeading(notes);
-      if (heading) session.meta.title = heading;
       this.writeObsidianNote(caseId);
     } else {
       this.save(caseId);
@@ -206,9 +206,12 @@ export class CaseManager {
     if (!session) return;
     session.meta.status = 'open';
     session.meta.updatedAt = new Date();
+    session.readonly = false;
+    this.activeCaseId = caseId;
+    this.context.globalState.update('investigator.activeCaseId', caseId);
     this.save(caseId);
     this.onCaseUpdatedEmitter.fire(caseId);
-    this.onActiveChangeEmitter.fire(this.activeCaseId);
+    this.onActiveChangeEmitter.fire(caseId);
   }
 
   deleteCase(caseId: string): boolean {
