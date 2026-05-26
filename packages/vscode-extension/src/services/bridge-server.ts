@@ -21,6 +21,9 @@ export class BridgeServer implements vscode.Disposable {
   private httpServer: http.Server | undefined;
   private server: WebSocketServer | undefined;
   private clients = new Set<WebSocket.WebSocket>();
+  private lastActivityAt = 0;
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private static readonly ACTIVITY_TTL = 60_000; // 60s after last contact → disconnected
 
   private statusEmitter = new vscode.EventEmitter<boolean>();
   readonly onStatusChange = this.statusEmitter.event;
@@ -58,6 +61,7 @@ export class BridgeServer implements vscode.Disposable {
       }
 
       if (req.url === '/state') {
+        this.touchActivity();
         const payload = this.activeCasePayload();
         this.out?.appendLine(`[bridge] GET /state → ${JSON.stringify(payload)}`);
         res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -67,6 +71,7 @@ export class BridgeServer implements vscode.Disposable {
 
       // POST /capture: browser sends evidence via HTTP when WS messages are unreliable.
       if (req.method === 'POST' && req.url === '/capture') {
+        this.touchActivity();
         let body = '';
         req.on('data', chunk => { body += chunk; });
         req.on('end', () => {
@@ -107,17 +112,18 @@ export class BridgeServer implements vscode.Disposable {
       const payload = this.activeCasePayload();
       this.out?.appendLine(`[bridge] client connected → sending ${JSON.stringify(payload)}`);
       this.sendTo(ws, payload);
-      this.statusEmitter.fire(true);
+      this.touchActivity();
 
       ws.on('message', (raw) => {
         try {
+          this.touchActivity();
           this.handleMessage(ws, JSON.parse(raw.toString()));
         } catch { /* ignore malformed */ }
       });
 
       ws.on('close', () => {
         this.clients.delete(ws);
-        if (this.clients.size === 0) this.statusEmitter.fire(false);
+        if (!this.isConnected()) this.statusEmitter.fire(false);
       });
     });
 
@@ -138,9 +144,18 @@ export class BridgeServer implements vscode.Disposable {
     });
 
     this.httpServer.listen(port, '127.0.0.1');
+
+    // Periodically check whether the activity window has expired so the
+    // status bar transitions back to "disconnected" without needing a WS event.
+    this.heartbeatTimer = setInterval(() => {
+      this.statusEmitter.fire(this.isConnected());
+    }, 10_000);
   }
 
   stop() {
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+    this.lastActivityAt = 0;
     this.server?.close();
     this.httpServer?.close();
     this.server = undefined;
@@ -149,7 +164,13 @@ export class BridgeServer implements vscode.Disposable {
   }
 
   isConnected(): boolean {
-    return this.clients.size > 0;
+    return this.clients.size > 0 || (Date.now() - this.lastActivityAt < BridgeServer.ACTIVITY_TTL);
+  }
+
+  private touchActivity() {
+    const wasConnected = this.isConnected();
+    this.lastActivityAt = Date.now();
+    if (!wasConnected) this.statusEmitter.fire(true);
   }
 
   broadcastActiveCase() {

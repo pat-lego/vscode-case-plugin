@@ -382,11 +382,6 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .btn.accent{background:#cca70011;color:#cca700;border-color:#cca70044}
 .btn.accent:hover{background:#cca70022}
 .related{margin-top:6px;font-size:10px;color:var(--vscode-descriptionForeground)}
-.timeline{height:50px;border-top:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background);padding:5px 12px;flex-shrink:0}
-.tl-label{font-size:10px;color:var(--vscode-descriptionForeground);margin-bottom:3px}
-.tl-bar{height:16px;background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:2px;position:relative;overflow:hidden}
-.tl-mark{position:absolute;width:2px;height:100%;background:var(--vscode-focusBorder);opacity:.7;cursor:pointer}
-.tl-mark:hover{opacity:1}
 .viewer-body{flex:1;overflow-y:auto;overflow-x:hidden}
 .viewer-pane{display:flex;flex-direction:column;border-bottom:1px solid var(--vscode-panel-border)}
 .viewer-pane-hdr{display:flex;align-items:center;gap:5px;padding:3px 8px;font-size:10px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
@@ -472,10 +467,6 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
   </div>
 </div>
 
-<div class="timeline">
-  <div class="tl-label">Timeline</div>
-  <div class="tl-bar" id="tl-bar"></div>
-</div>
 
 <!-- Context menu for evidence items -->
 <div class="ctx-menu" id="ctx-menu">
@@ -752,7 +743,6 @@ function addEvidence(item) {
   wrapper.dataset.evId = item.id;
   wrapper.appendChild(row);
   document.getElementById('ev-list').appendChild(wrapper);
-  updateTimeline();
 }
 
 // ── Multi-pane Viewer ─────────────────────────────────────────
@@ -927,7 +917,6 @@ function removeEvidence(id) {
   viewerPanes.filter(function(p) { return p.evId === id; })
     .map(function(p) { return p.paneId; })
     .forEach(function(pid) { closePane(null, pid); });
-  updateTimeline();
 }
 
 function delEvidence(e, id) {
@@ -1022,15 +1011,7 @@ function cardHtml(f) {
 
 function toggle(card) { card.classList.toggle('open'); }
 
-function updateTimeline() {
-  if(!items.length) return;
-  var ts = items.map(function(e){return new Date(e.timestamp).getTime();});
-  var lo=Math.min.apply(null,ts), hi=Math.max.apply(null,ts), span=hi-lo||1;
-  document.getElementById('tl-bar').innerHTML = items.map(function(e){
-    var pct = ((new Date(e.timestamp).getTime()-lo)/span*92+4).toFixed(1);
-    return '<div class="tl-mark" style="left:'+pct+'%" title="'+esc(e.name)+' '+fmt(new Date(e.timestamp))+'"></div>';
-  }).join('');
-}
+
 
 function fmt(d){return String(d.getHours()).padStart(2,'0')+'h'+String(d.getMinutes()).padStart(2,'0');}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
