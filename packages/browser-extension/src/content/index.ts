@@ -1,11 +1,12 @@
 import * as splunk from './adapters/splunk.adapter.js';
 import * as generic from './adapters/generic.adapter.js';
+import { captureTimestamp } from '../utils/capture-name.js';
 
 // Prevent double-registration if the script is injected more than once.
-if ((window as Record<string, unknown>)['__ii_loaded']) {
+if ((window as unknown as Record<string, unknown>)['__ii_loaded']) {
   throw new Error('II content script already loaded');
 }
-(window as Record<string, unknown>)['__ii_loaded'] = true;
+(window as unknown as Record<string, unknown>)['__ii_loaded'] = true;
 
 function log(msg: string, ctx?: Record<string, unknown>) {
   const ctxStr = ctx && Object.keys(ctx).length > 0 ? ' ' + JSON.stringify(ctx) : '';
@@ -90,12 +91,11 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
     }
     const hostname = location.hostname;
     const now = new Date();
-    const hhmm = String(now.getHours()).padStart(2, '0') + 'h' + String(now.getMinutes()).padStart(2, '0');
     const header = `Source: ${location.href}\nCaptured: ${now.toISOString()}\n\n`;
     const payload = {
       type: 'capture' as const,
       source: hostname,
-      name: `${hostname}-selection-${hhmm}.txt`,
+      name: `${hostname}-selection-${captureTimestamp(now)}.txt`,
       content: header + selection,
       timestamp: now.toISOString()
     };

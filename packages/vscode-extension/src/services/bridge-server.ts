@@ -232,7 +232,7 @@ export class BridgeServer implements vscode.Disposable {
         } else {
           destDir = os.tmpdir();
         }
-        filePath = path.join(destDir, name);
+        filePath = uniqueFilePath(destDir, name);
         try {
           fs.writeFileSync(filePath, Buffer.from(match[1], 'base64'));
         } catch (e) {
@@ -274,4 +274,16 @@ export class BridgeServer implements vscode.Disposable {
       ? { type: 'activeCase', caseId: session.meta.id, title: session.meta.title }
       : { type: 'noActiveCase' };
   }
+}
+
+// Returns a path that doesn't yet exist on disk. If `name` is taken, appends -2, -3, etc.
+function uniqueFilePath(dir: string, name: string): string {
+  const candidate = path.join(dir, name);
+  if (!fs.existsSync(candidate)) return candidate;
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  let i = 2;
+  let next: string;
+  do { next = path.join(dir, `${base}-${i}${ext}`); i++; } while (fs.existsSync(next));
+  return next;
 }

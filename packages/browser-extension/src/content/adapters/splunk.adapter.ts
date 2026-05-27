@@ -1,3 +1,5 @@
+import { captureTimestamp } from '../../utils/capture-name.js';
+
 export interface AdapterResult {
   name: string;
   content: string;
@@ -14,7 +16,7 @@ export function matches(): boolean {
 
 export function extract(): AdapterResult | null {
   const timestamp = new Date();
-  const timeStr = `${pad(timestamp.getHours())}h${pad(timestamp.getMinutes())}`;
+  const timeStr = captureTimestamp(timestamp);
 
   // Try to get the search query
   const searchInput = (
@@ -72,8 +74,4 @@ export function extract(): AdapterResult | null {
     source: 'splunk',
     mimeType: 'text/plain'
   };
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0');
 }

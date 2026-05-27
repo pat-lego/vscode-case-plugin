@@ -1,4 +1,5 @@
 import { getState, setState, InboundMessage, OutboundMessage } from '../bridge/websocket.js';
+import { captureTimestamp } from '../utils/capture-name.js';
 
 let ws: WebSocket | null = null;
 
@@ -233,11 +234,10 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sen
           return;
         }
         const now = new Date();
-        const hhmm = String(now.getHours()).padStart(2, '0') + 'h' + String(now.getMinutes()).padStart(2, '0');
         const payload: OutboundMessage = {
           type: 'screenshot',
           source: tab.url ?? '',
-          name: `screenshot-${hhmm}.png`,
+          name: `screenshot-${captureTimestamp(now)}.png`,
           data: dataUrl,
           timestamp: now.toISOString()
         };

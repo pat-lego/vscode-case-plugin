@@ -1,8 +1,9 @@
 import { AdapterResult } from './splunk.adapter.js';
+import { captureTimestamp } from '../../utils/capture-name.js';
 
 export function extract(label?: string): AdapterResult {
   const timestamp = new Date();
-  const timeStr = `${pad(timestamp.getHours())}h${pad(timestamp.getMinutes())}`;
+  const timeStr = captureTimestamp(timestamp);
   const source = new URL(location.href).hostname;
 
   // Prefer selected text, fall back to main content area, fall back to body
@@ -38,8 +39,4 @@ export function extract(label?: string): AdapterResult {
   }
 
   return { name, content, source, mimeType: 'text/plain' };
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0');
 }
