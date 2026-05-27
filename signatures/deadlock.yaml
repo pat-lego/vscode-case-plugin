@@ -20,17 +20,18 @@ description: >
 version: "1.1"
 
 conditions:
-  - field: blockedMonitorCount
+  - field: synchronizedBlockedMonitorCount
     operator: gte
     value: 2
     description: >
-      The count of distinct monitor addresses that have at least one thread
-      blocked on them in a single dump. Each monitor appears in the dump as
-      "- waiting to lock <0xADDR> (a some.ClassName)". A value of 2 means
-      there are two different objects being contended simultaneously. This fires
-      from a single dump. Two or more contested monitors is the minimum
-      structural requirement for a deadlock — you cannot have a cycle with
-      only one lock.
+      The count of distinct monitor addresses where at least one waiter is in
+      the BLOCKED state (i.e. blocked on a "synchronized" entry point, shown
+      as "- waiting to lock <0xADDR>" in the dump). JUC park monitors
+      (AbstractQueuedSynchronizer ConditionObjects, ReentrantLock internals)
+      are excluded because those are WAITING/TIMED_WAITING threads using
+      LockSupport.park, not deadlock candidates. A value of 2 means at least
+      two distinct synchronized objects are being contended by BLOCKED threads
+      at the same time -- the minimum structural requirement for a deadlock cycle.
   - field: blockedThreadCount
     operator: gte
     value: 2

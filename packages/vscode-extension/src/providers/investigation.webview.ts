@@ -160,7 +160,7 @@ export class InvestigationWebview {
         const newEvidence: Array<{id: string; name: string; type: string; timestamp: string}> = [];
         let snippetIdx = 1;
 
-        // Extract fenced code blocks → save as evidence files
+        // Extract fenced code blocks → save as evidence files (idempotent: skip if already tracked)
         const processedNotes = rawNotes.replace(/```[\s\S]*?```/g, (match) => {
           const inner = match.slice(3, -3).replace(/^[^\n]*\n/, '').trim();
           const fileName = `snippet-${snippetIdx++}.txt`;
@@ -168,19 +168,24 @@ export class InvestigationWebview {
             try {
               fs.mkdirSync(caseDir, { recursive: true });
               const filePath = path.join(caseDir, fileName);
-              fs.writeFileSync(filePath, inner, 'utf-8');
-              const item: import('@incident-investigator/core').EvidenceItem = {
-                id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                type: 'generic',
-                source: fileName,
-                capturedAt: new Date(),
-                filePath,
-              };
-              this.caseManager.addEvidence(caseId, item);
-              newEvidence.push({ id: item.id, name: fileName, type: 'generic', timestamp: item.capturedAt.toISOString() });
+              // Skip if this file is already tracked as evidence — avoids duplicates on re-export.
+              const session2 = this.caseManager.getSession(caseId);
+              const alreadyTracked = session2?.meta.evidence.some(e => e.filePath === filePath);
+              if (!alreadyTracked) {
+                fs.writeFileSync(filePath, inner, 'utf-8');
+                const item: import('@incident-investigator/core').EvidenceItem = {
+                  id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  type: 'generic',
+                  source: fileName,
+                  capturedAt: new Date(),
+                  filePath,
+                };
+                this.caseManager.addEvidence(caseId, item);
+                newEvidence.push({ id: item.id, name: fileName, type: 'generic', timestamp: item.capturedAt.toISOString() });
+              }
             } catch { /* best-effort */ }
           }
-          return `[${fileName}](./evidence/${fileName})`;
+          return `[${fileName}](./${fileName})`;
         });
 
         if (newEvidence.length > 0) {
@@ -752,6 +757,11 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .md-link-bar{display:flex;align-items:center;gap:4px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
 .md-link-input{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));padding:2px 5px;font-size:11px;border-radius:2px;outline:none;font-family:inherit}
 .md-link-input:focus{border-color:var(--vscode-focusBorder)}
+#notes-search-bar{display:none;align-items:center;gap:4px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
+#notes-search-bar.visible{display:flex}
+#notes-search-input{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));padding:2px 5px;font-size:10px;border-radius:2px;outline:none;font-family:inherit}
+#notes-search-input:focus{border-color:var(--vscode-focusBorder)}
+#notes-search-count{font-size:10px;color:var(--vscode-descriptionForeground);white-space:nowrap;min-width:52px;text-align:right}
 .export-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:center;justify-content:center}
 .export-dialog{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:4px;width:700px;max-width:90vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.5)}
 .export-dialog-hdr{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
@@ -813,6 +823,13 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
       <input class="md-link-input" id="md-link-input" placeholder="https://" autocomplete="off" spellcheck="false">
       <button class="btn" id="md-link-ok" style="font-size:10px;padding:2px 8px">Insert</button>
       <button class="btn" id="md-link-cancel" style="font-size:10px;padding:2px 8px">&#x2715;</button>
+    </div>
+    <div id="notes-search-bar">
+      <input id="notes-search-input" placeholder="Search notes..." autocomplete="off" spellcheck="false">
+      <span id="notes-search-count"></span>
+      <button class="pane-search-nav" id="notes-search-prev" title="Previous (Shift+Enter)">&#x2191;</button>
+      <button class="pane-search-nav" id="notes-search-next" title="Next (Enter)">&#x2193;</button>
+      <button class="pane-search-nav" id="notes-search-close" title="Close (Escape)">&#x2715;</button>
     </div>
     <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here&#x2026;&#10;&#10;What did you observe? What have you tried? What&#x27;s the current hypothesis?"></textarea>
     <div class="notes-preview" id="notes-preview"></div>
@@ -891,6 +908,92 @@ function debounce(fn, ms) {
   var t;
   return function() { clearTimeout(t); t = setTimeout(fn, ms); };
 }
+
+// -- Notes search --------------------------------------------------------------
+var notesSearchMatches = []; // [{start, end}]
+var notesSearchCur = 0;
+
+function openNotesSearch() {
+  var bar = document.getElementById('notes-search-bar');
+  var inp = document.getElementById('notes-search-input');
+  bar.classList.add('visible');
+  inp.focus();
+  inp.select();
+  if (inp.value) runNotesSearch();
+}
+
+function closeNotesSearch() {
+  var bar = document.getElementById('notes-search-bar');
+  bar.classList.remove('visible');
+  notesSearchMatches = [];
+  notesSearchCur = 0;
+  document.getElementById('notes-search-count').textContent = '';
+  document.getElementById('notes-area').focus();
+}
+
+function runNotesSearch() {
+  var query = document.getElementById('notes-search-input').value;
+  var ta = document.getElementById('notes-area');
+  var countEl = document.getElementById('notes-search-count');
+  notesSearchMatches = [];
+  notesSearchCur = 0;
+  if (!query) { countEl.textContent = ''; return; }
+  var text = ta.value;
+  var lower = text.toLowerCase();
+  var lowerQ = query.toLowerCase();
+  var qLen = lowerQ.length;
+  if (qLen === 0) { countEl.textContent = ''; return; }
+  var p = lower.indexOf(lowerQ);
+  while (p !== -1) {
+    notesSearchMatches.push({ start: p, end: p + qLen });
+    p = lower.indexOf(lowerQ, p + qLen);
+  }
+  if (notesSearchMatches.length === 0) {
+    countEl.textContent = 'no results';
+    return;
+  }
+  focusNotesMatch(0);
+}
+
+function focusNotesMatch(idx) {
+  var ta = document.getElementById('notes-area');
+  var countEl = document.getElementById('notes-search-count');
+  if (!notesSearchMatches.length) return;
+  notesSearchCur = (idx + notesSearchMatches.length) % notesSearchMatches.length;
+  var m = notesSearchMatches[notesSearchCur];
+  ta.focus();
+  ta.setSelectionRange(m.start, m.end);
+  // Scroll the textarea so the match is visible
+  var linesBefore = ta.value.slice(0, m.start).split('\\n').length - 1;
+  var lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+  ta.scrollTop = Math.max(0, linesBefore * lineHeight - ta.clientHeight / 2);
+  countEl.textContent = (notesSearchCur + 1) + ' / ' + notesSearchMatches.length;
+}
+
+function navNotesMatch(dir) {
+  if (!notesSearchMatches.length) return;
+  focusNotesMatch(notesSearchCur + dir);
+}
+
+(function() {
+  var inp = document.getElementById('notes-search-input');
+  inp.addEventListener('input', debounce(runNotesSearch, 200));
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); navNotesMatch(e.shiftKey ? -1 : 1); }
+    if (e.key === 'Escape') { e.preventDefault(); closeNotesSearch(); }
+  });
+  document.getElementById('notes-search-prev').addEventListener('click', function() { navNotesMatch(-1); });
+  document.getElementById('notes-search-next').addEventListener('click', function() { navNotesMatch(1); });
+  document.getElementById('notes-search-close').addEventListener('click', closeNotesSearch);
+})();
+
+// Ctrl+F / Cmd+F when notes area is focused opens notes search
+document.getElementById('notes-area').addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    openNotesSearch();
+  }
+});
 
 var embRefMatchCur = 0;
 

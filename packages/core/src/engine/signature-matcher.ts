@@ -32,7 +32,7 @@ function evaluate(signature: Signature, signals: ExtractedSignals): Finding {
     confidenceScore: score,
     matchedConditions: matched,
     unmatchedConditions: unmatched,
-    evidence: buildEvidence(matched),
+    evidence: buildEvidence(matched, signals),
     nextSteps: signature.nextSteps,
     relatedSignatures: signature.relatedSignatures
   };
@@ -49,11 +49,6 @@ function evaluateCondition(
   return { matched, value };
 }
 
-/**
- * Resolves a signal field name to its current value by direct property lookup on the
- * summary. No switch/case — any primitive field added to ThreadDumpSummary is
- * automatically available to signature YAML without touching this file.
- */
 function resolveField(field: string, signals: ExtractedSignals): number | string | undefined {
   const val = (signals.summary as unknown as Record<string, unknown>)[field];
   if (typeof val === 'number' || typeof val === 'string') return val;
@@ -71,8 +66,6 @@ function compare(value: number | string, operator: SignatureCondition['operator'
     case 'eq':       return value === target;
     case 'contains': return String(value).includes(String(target));
     case 'matches': {
-      // Support (?i) inline flag prefix (PCRE syntax used in YAML signatures).
-      // JavaScript uses RegExp constructor flags instead, so convert before compiling.
       let pattern = String(target);
       let flags = '';
       const inlineFlag = pattern.match(/^\(\?([a-z]+)\)([\s\S]*)/);
@@ -83,6 +76,81 @@ function compare(value: number | string, operator: SignatureCondition['operator'
   }
 }
 
-function buildEvidence(matched: MatchedCondition[]): string[] {
-  return matched.map(c => `${c.description}: ${c.observedValue}`);
+function buildEvidence(matched: MatchedCondition[], signals: ExtractedSignals): string[] {
+  const lines: string[] = matched.map(c => `${c.description}: ${c.observedValue}`);
+
+  // Enrich with thread-level context from the matched conditions
+  const { summary, threadDumps } = signals;
+
+  for (const c of matched) {
+    // For conn-pool / timed-waiting key frame matches: show which threads are stuck
+    if (c.field === 'suspiciousTimedWaitingKeyFrame' && summary.suspiciousTimedWaitingKeyFrame) {
+      const kf = summary.suspiciousTimedWaitingKeyFrame;
+      // Find fingerprints whose keyFrame matches this frame (across all dumps)
+      const affectedNames: string[] = [];
+      for (const dump of threadDumps) {
+        for (const fp of dump.stackFingerprints) {
+          if ((fp.keyFrame || fp.topFrame).includes(kf) || kf.includes(fp.keyFrame || fp.topFrame)) {
+            affectedNames.push(...fp.threadNames);
+          }
+        }
+      }
+      const unique = [...new Set(affectedNames)].slice(0, 20);
+      if (unique.length > 0) {
+        lines.push(`Affected thread names (${unique.length}${affectedNames.length > 20 ? '+' : ''}): ${unique.join(', ')}`);
+      }
+    }
+
+    // For dominant active fingerprint (hot-endpoint): show top thread names
+    if (c.field === 'dominantActiveFingerprintCount' && summary.dominantActiveFingerprintCount > 0) {
+      const topRunnable = (summary.dominantFingerprints ?? [])
+        .filter(fp => fp.state === 'RUNNABLE')
+        .sort((a, b) => b.count - a.count)[0];
+      if (topRunnable) {
+        const names = topRunnable.threadNames.slice(0, 20);
+        const kf = topRunnable.keyFrame || topRunnable.topFrame;
+        lines.push(`Hot code path: ${kf}`);
+        lines.push(`Affected thread names (${names.length}${topRunnable.threadNames.length > 20 ? '+' : ''}): ${names.join(', ')}`);
+      }
+    }
+
+    // For blocked monitor class: show lock holder and waiting threads
+    if (c.field === 'topBlockedMonitorClass' && summary.topBlockedMonitorClass) {
+      const cls = summary.topBlockedMonitorClass;
+      for (const dump of threadDumps) {
+        for (const mon of dump.blockedMonitors) {
+          if (mon.monitorClass.includes(cls) || cls.includes(mon.monitorClass)) {
+            if (mon.lockHolderThread) {
+              lines.push(`Lock holder: ${mon.lockHolderThread}`);
+            }
+            if (mon.waitingThreadNames.length > 0) {
+              const names = mon.waitingThreadNames.slice(0, 15);
+              lines.push(`Waiting threads (${mon.waitingThreadCount}): ${names.join(', ')}`);
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // For blocked thread count: show which threads are BLOCKED and what they are waiting on
+    if (c.field === 'blockedThreadCount' || c.field === 'synchronizedBlockedMonitorCount') {
+      const blockedInfo: string[] = [];
+      for (const dump of threadDumps) {
+        for (const mon of dump.blockedMonitors) {
+          if (mon.waitingThreadNames.length > 0) {
+            const names = mon.waitingThreadNames.slice(0, 10).join(', ');
+            const holder = mon.lockHolderThread ? ` | lock held by: ${mon.lockHolderThread}` : '';
+            blockedInfo.push(`${mon.waitingThreadCount} threads waiting on ${mon.monitorClass}${holder} — ${names}`);
+          }
+        }
+        if (blockedInfo.length > 0) break; // use first dump only
+      }
+      if (blockedInfo.length > 0) {
+        lines.push(...blockedInfo.slice(0, 5));
+      }
+    }
+  }
+
+  return lines;
 }

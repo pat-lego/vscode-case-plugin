@@ -62,6 +62,22 @@ export interface ThreadDumpSummary {
   threadCountAnomaly: number;
   /** 1 if the average IO-thread ratio exceeds 15%, else 0. */
   ioSaturationDetected: number;
+  /**
+   * Count of distinct monitor addresses where at least one waiter is in the
+   * BLOCKED state (from a "synchronized" block -- "waiting to lock" lines).
+   * This is distinct from blockedMonitorCount which includes JUC park monitors
+   * (WAITING/TIMED_WAITING state, "parking to wait for" lines).
+   * Used by deadlock detection to avoid false positives from AQS contention.
+   */
+  synchronizedBlockedMonitorCount: number;
+  /**
+   * Thread count of the largest RUNNABLE stack fingerprint.
+   * Idle pool threads (WAITING/TIMED_WAITING) are excluded.
+   * Used by hot-endpoint detection to avoid false positives on idle thread pools.
+   */
+  dominantActiveFingerprintCount: number;
+  /** dominantActiveFingerprintCount / totalThreadCount */
+  dominantActiveFingerprintRatio: number;
 
   // ── Internal arrays — for evidence building and Claude context only ────────
   dominantFingerprints: StackFingerprint[];
@@ -175,6 +191,38 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
   const avgIoRatio = dumps.reduce((s, d) => s + d.ioThreadCount / d.totalThreadCount, 0) / dumps.length;
   const blockedMonitorCount = Math.max(...dumps.map(d => d.blockedMonitors.length));
 
+  // synchronizedBlockedMonitorCount: monitors where waiters are in BLOCKED state
+  // (synchronized block contention, not JUC park waits)
+  const synchronizedBlockedMonitorCount = (() => {
+    let count = 0;
+    for (const dump of dumps) {
+      const addrs = new Set<string>();
+      for (const monitor of dump.blockedMonitors) {
+        // A monitor with waiter thread names not yet known to be from parking --
+        // we infer BLOCKED state by checking if the monitor address appears in
+        // any fingerprint whose threads are in BLOCKED state.
+        const isFromBlocked = dump.stackFingerprints.some(
+          fp => fp.state === 'BLOCKED' && fp.threadNames.some(
+            name => monitor.waitingThreadNames.includes(name)
+          )
+        );
+        if (isFromBlocked) addrs.add(monitor.monitorAddress);
+      }
+      if (addrs.size > count) count = addrs.size;
+    }
+    return count;
+  })();
+
+  // dominantActiveFingerprintCount / Ratio: only RUNNABLE fingerprints
+  const runnableFingerprints = Array.from(fingerprintMap.values())
+    .map(group => group.reduce((a, b) => a.count > b.count ? a : b))
+    .filter(fp => fp.state === 'RUNNABLE')
+    .sort((a, b) => b.count - a.count);
+  const dominantActiveFingerprintCount = runnableFingerprints[0]?.count ?? 0;
+  const dominantActiveFingerprintRatio = totalThreadCount > 0
+    ? dominantActiveFingerprintCount / totalThreadCount
+    : 0;
+
   return {
     threadDumps: dumps,
     summary: {
@@ -195,6 +243,9 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
       blockedMonitorCount,
       threadCountAnomaly: totalThreadCount > THREAD_COUNT_THRESHOLD ? 1 : 0,
       ioSaturationDetected: avgIoRatio > IO_THREAD_RATIO_THRESHOLD ? 1 : 0,
+      synchronizedBlockedMonitorCount,
+      dominantActiveFingerprintCount,
+      dominantActiveFingerprintRatio,
       dominantFingerprints,
       persistentBlockedMonitorAddresses
     }
@@ -220,6 +271,9 @@ function emptySummary(): ThreadDumpSummary {
     blockedMonitorCount: 0,
     threadCountAnomaly: 0,
     ioSaturationDetected: 0,
+    synchronizedBlockedMonitorCount: 0,
+    dominantActiveFingerprintCount: 0,
+    dominantActiveFingerprintRatio: 0,
     dominantFingerprints: [],
     persistentBlockedMonitorAddresses: []
   };

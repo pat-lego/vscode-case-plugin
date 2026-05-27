@@ -15,7 +15,6 @@ import { SignatureBuilderPanel } from './panels/signature-builder.webview';
 import { SignatureViewerPanel } from './panels/signature-viewer.webview';
 import { ManualSignatureBuilderPanel } from './panels/manual-signature-builder.webview';
 import { CaseResolutionPanel } from './panels/case-resolution.webview';
-import { ClaudeReviewPanel } from './panels/claude-review.webview';
 import { StaticAnalysisPanel } from './panels/static-analysis.webview';
 import { createLogger } from './logger';
 
@@ -91,12 +90,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand('investigator.resolveCase', (caseId: string) =>
       CaseResolutionPanel.show(context, caseId, caseManager, sigService)
-    ),
-    vscode.commands.registerCommand('investigator.fullReview', (caseId: string) =>
-      ClaudeReviewPanel.show(context, caseId, caseManager, sigService)
-    ),
-    vscode.commands.registerCommand('investigator.askClaude', (caseId: string, signatureId: string) =>
-      ClaudeReviewPanel.showForSignature(context, caseId, signatureId, caseManager, sigService)
     ),
     vscode.commands.registerCommand('investigator.buildSignature', (caseId: string, finding: unknown) =>
       SignatureBuilderPanel.show(context, caseId, finding, caseManager, sigService)

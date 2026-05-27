@@ -182,7 +182,8 @@ function buildBlockedMonitors(threads: RawThread[]): BlockedMonitor[] {
       monitorClass,
       waitingThreadCount: waiters.length,
       lockHolderThread: holder?.name,
-      lockHolderStack: holder?.frames ?? []
+      lockHolderStack: holder?.frames ?? [],
+      waitingThreadNames: waiters.slice(0, 20).map(t => t.name)
     };
   });
 }

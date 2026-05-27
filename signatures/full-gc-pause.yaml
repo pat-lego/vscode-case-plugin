@@ -22,24 +22,27 @@ version: "1.1"
 conditions:
   - field: gcThreadCount
     operator: gte
-    value: 4
+    value: 8
     description: >
       Count of threads in the dump whose names match known JVM GC naming
       patterns: "GC task thread", "Gang worker" (ParallelGC), "G1 Conc",
       "ZWorker", "Shenandoah GC Thread", and equivalents for IBM J9
-      ("MM " prefix, "GCWorker"). A baseline JVM always has a few GC threads;
-      4 or more visible in the dump suggests GC subsystems are actively engaged.
+      ("MM " prefix, "GCWorker"). A baseline AEM JVM always has 4+ GC threads;
+      8 or more visible in the dump suggests GC subsystems are actively engaged
+      in parallel collection work, not just idling.
       This is counted per dump, not across dumps.
   - field: waitingThreadCount
     operator: gte
-    value: 50
+    value: 200
     description: >
       Count of application threads in the WAITING or TIMED_WAITING state at
-      the moment the dump was taken. During or immediately after a GC pause,
-      many application threads are found parked (LockSupport.park, Object.wait,
-      Thread.sleep) because they completed their current work and were waiting
-      for the next unit — only to have the JVM pause them before they could
-      receive it. 50+ waiting threads in a system that should be busy indicates
+      the moment the dump was taken. AEM instances routinely idle with 100+
+      WAITING threads under normal conditions, so a lower threshold produces
+      false positives. During or immediately after a GC pause, many application
+      threads are found parked (LockSupport.park, Object.wait, Thread.sleep)
+      because they completed their current work and were waiting for the next
+      unit — only to have the JVM pause them before they could receive it.
+      200+ waiting threads in a system that should be busy indicates
       throughput has collapsed, which is consistent with GC pressure.
   - field: threadCountAnomaly
     operator: eq

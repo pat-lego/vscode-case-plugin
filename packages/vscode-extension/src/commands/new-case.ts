@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 import { CaseManager } from '../services/case-manager';
 import { InvestigationWebview } from '../providers/investigation.webview';
 
 export async function newCase(
-  context: vscode.ExtensionContext,
+  _context: vscode.ExtensionContext,
   caseManager: CaseManager,
   webview: InvestigationWebview
 ): Promise<void> {
@@ -32,8 +33,32 @@ export async function newCase(
   }
 
   const caseId = generateCaseId(initials);
-  caseManager.createCase(caseId, title, targetCasePath);
+  const initialNotes = resolveTemplate(config, caseId, title, initials);
+  caseManager.createCase(caseId, title, targetCasePath, initialNotes);
   webview.openCase(caseId);
+}
+
+function resolveTemplate(
+  config: vscode.WorkspaceConfiguration,
+  caseId: string,
+  title: string,
+  initials: string
+): string | undefined {
+  const templatePath = config.get<string>('notesTemplatePath');
+  if (!templatePath) return undefined;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(templatePath, 'utf-8');
+  } catch {
+    vscode.window.showWarningMessage(`Notes template not found: ${templatePath}`);
+    return undefined;
+  }
+  const date = new Date().toISOString().slice(0, 10);
+  return raw
+    .replace(/\{\{caseId\}\}/g, caseId)
+    .replace(/\{\{title\}\}/g, title)
+    .replace(/\{\{date\}\}/g, date)
+    .replace(/\{\{initials\}\}/g, initials.toUpperCase());
 }
 
 function generateCaseId(initials: string): string {

@@ -39,4 +39,5 @@ export interface BlockedMonitor {
   waitingThreadCount: number;
   lockHolderThread?: string;
   lockHolderStack: string[];
+  waitingThreadNames: string[];
 }

@@ -164,15 +164,15 @@
           "default": 7734,
           "description": "WebSocket port for browser extension bridge"
         },
-        "investigator.claudeApiKey": {
-          "type": "string",
-          "description": "Anthropic API key for Claude case review (optional)"
-        },
         "investigator.casePaths": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
           "description": "Folders to scan for cases. Each folder may contain multiple case subfolders where the subfolder name matches its primary MD file (e.g. issues/ISSUE-1/ISSUE-1.md). All paths are scanned on startup. New cases are written to the first path in the list."
+        },
+        "investigator.notesTemplatePath": {
+          "type": "string",
+          "description": "Path to a Markdown file used as the template for new case notes. Supports placeholders: {{caseId}}, {{title}}, {{date}}, {{initials}}."
         }
       }
     }

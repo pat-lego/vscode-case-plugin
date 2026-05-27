@@ -58,9 +58,9 @@ export class CaseManager {
     return best?.meta.id ?? null;
   }
 
-  createCase(id: string, title: string, targetCasePath?: string): CaseSession {
+  createCase(id: string, title: string, targetCasePath?: string, initialNotes?: string): CaseSession {
     const now = new Date();
-    const meta: Case = { id, title, createdAt: now, updatedAt: now, status: 'open', evidence: [] };
+    const meta: Case = { id, title, createdAt: now, updatedAt: now, status: 'open', evidence: [], notes: initialNotes };
     const casePath = targetCasePath ?? this.getCasePaths()[0] ?? '';
     const session: CaseSession = { meta, threadDumpSignals: [], findings: [], casePath };
     this.sessions.set(id, session);
@@ -151,10 +151,16 @@ export class CaseManager {
     const ev = session.meta.evidence[idx];
 
     // Delete physical file(s) from disk so scanDirForEvidence won't re-discover them.
-    if (session.casePath) {
+    // Exception: if the file's basename is still referenced in the case notes (e.g. an image
+    // embedded as ![alt](./screenshot.png)), preserve it — the user still needs it for posting.
+    const notes = session.meta.notes ?? '';
+    const fileBasename = ev.filePath ? path.basename(ev.filePath) : '';
+    const referencedInNotes = fileBasename ? notes.includes(fileBasename) : false;
+
+    if (!referencedInNotes && session.casePath) {
       const caseDir = path.join(session.casePath, caseId);
       if (ev.id.startsWith('disk-')) {
-        // Auto-scanned file — delete the original file in the case directory.
+        // Auto-scanned file — delete the original file so it won't be re-discovered.
         if (ev.filePath && fs.existsSync(ev.filePath)) {
           try { fs.unlinkSync(ev.filePath); } catch { /* best-effort */ }
         }

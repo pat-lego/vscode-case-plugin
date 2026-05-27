@@ -71,19 +71,24 @@ export class StaticAnalysisPanel {
 
           // Top blocked/waiting stack fingerprints — use keyFrame (first non-JVM frame)
           // instead of topFrame (which is always Unsafe.park or similar) for display.
+          const JVM_FRAME_PREFIXES = ['jdk.', 'java.', 'sun.', 'com.sun.', 'javax.'];
           const topFingerprints = (summary.dominantFingerprints ?? [])
             .filter(fp => fp.state === 'BLOCKED' || fp.state === 'WAITING' || fp.state === 'TIMED_WAITING')
+            .filter(fp => {
+              const displayFrame = fp.keyFrame || fp.topFrame;
+              return !JVM_FRAME_PREFIXES.some(p => displayFrame.startsWith(p));
+            })
             .slice(0, 8)
             .map(fp => ({
               topFrame: fp.keyFrame || fp.topFrame,
               frames: fp.frames ?? [],
               count: fp.count,
               state: fp.state,
-              threadNames: fp.threadNames.slice(0, 6)
+              threadNames: fp.threadNames.slice(0, 10)
             }));
 
           // Blocked monitors across all dumps, deduplicated and sorted
-          const monitorMap = new Map<string, { monitorClass: string; waitingThreadCount: number; lockHolderThread?: string }>();
+          const monitorMap = new Map<string, { monitorClass: string; waitingThreadCount: number; lockHolderThread?: string; waitingThreadNames: string[] }>();
           for (const dump of threadDumps) {
             for (const m of dump.blockedMonitors) {
               const prev = monitorMap.get(m.monitorAddress);
@@ -91,7 +96,8 @@ export class StaticAnalysisPanel {
                 monitorMap.set(m.monitorAddress, {
                   monitorClass: m.monitorClass,
                   waitingThreadCount: m.waitingThreadCount,
-                  lockHolderThread: m.lockHolderThread
+                  lockHolderThread: m.lockHolderThread,
+                  waitingThreadNames: m.waitingThreadNames ?? []
                 });
               }
             }
@@ -384,7 +390,7 @@ function renderResults(m) {
   m.findings.forEach(function(f) {
     var card = document.createElement('div');
     card.className = 'finding-card';
-    var evLines = (f.evidence || []).map(function(ev) { return '<div>' + esc(ev) + '</div>'; }).join('');
+    var evLines = (f.evidence || []).map(function(ev) { return '<div style="white-space:pre-wrap;word-break:break-word">' + esc(ev) + '</div>'; }).join('');
     card.innerHTML =
       '<div class="finding-hdr">' +
         '<span class="badge ' + esc(f.confidence) + '">' + esc(f.confidence.toUpperCase()) + '</span>' +
@@ -454,6 +460,11 @@ function renderResults(m) {
         html += '<div class="monitor-class">' + esc(mon.monitorClass) + '</div>';
         if (mon.lockHolderThread) {
           html += '<div class="monitor-holder">Held by: ' + esc(mon.lockHolderThread) + '</div>';
+        }
+        if (mon.waitingThreadNames && mon.waitingThreadNames.length > 0) {
+          var wnames = mon.waitingThreadNames.join('\\n');
+          html += '<details style="margin-top:3px"><summary style="font-size:10px;color:var(--vscode-descriptionForeground);cursor:pointer">waiting threads (' + mon.waitingThreadNames.length + (mon.waitingThreadCount > mon.waitingThreadNames.length ? '+' : '') + ')</summary>';
+          html += '<div class="thread-names" style="white-space:pre-wrap">' + esc(wnames) + '</div></details>';
         }
         html += '</div>';
       });
