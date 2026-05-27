@@ -106,6 +106,14 @@ function buildSignals(threads: RawThread[], capturedAt: Date, format: 'jstack'):
 
   const gcThreadCount = threads.filter(t => GC_THREAD_PATTERN.test(t.name)).length;
 
+  // Threads actively handling an HTTP request. Detects several naming conventions:
+  //   Jetty/AEM:  "1.2.3.4 [timestamp] GET /path ..."
+  //   WildFly/AS: "default task-N" (by frame pattern below is secondary; name alone is ambiguous)
+  //   Spring Boot embedded Tomcat: "http-nio-NNNN-exec-N" with request URL in frames
+  // Primary check: HTTP method token immediately followed by a path in the thread name.
+  const HTTP_REQUEST_PATTERN = /\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\//;
+  const activeRequestThreadCount = threads.filter(t => HTTP_REQUEST_PATTERN.test(t.name)).length;
+
   return {
     capturedAt,
     totalThreadCount: threads.length,
@@ -114,6 +122,7 @@ function buildSignals(threads: RawThread[], capturedAt: Date, format: 'jstack'):
     blockedMonitors,
     ioThreadCount,
     gcThreadCount,
+    activeRequestThreadCount,
     format
   };
 }

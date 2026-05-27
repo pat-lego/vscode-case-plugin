@@ -1,0 +1,26 @@
+id: servlet-pool-saturation
+name: Servlet Thread Pool Saturation
+version: "1.0"
+description: >
+  A high number of HTTP worker threads are actively processing inbound requests simultaneously.
+  This pattern fires when thread names carry an HTTP method and path — a naming convention used
+  by Jetty (AEM, Dropwizard), Spring Boot embedded Tomcat, and some WildFly configurations.
+  Typical servlet pools range from 100 to 400 threads; 50+ active request threads indicates
+  the pool is under meaningful load. At 80–100% utilisation new requests queue and response
+  times degrade sharply. Root causes include long-running renders, cache-miss avalanches,
+  slow downstream calls, or a single hot URL monopolising the pool.
+conditions:
+  - field: activeRequestThreadCount
+    operator: gte
+    value: 50
+    description: Active HTTP request threads (thread name contains HTTP method + path)
+confidence: high
+nextSteps:
+  - Identify the slow URL — look for the most frequent HTTP method + path pattern in the thread names shown in evidence
+  - Check whether a single page or endpoint dominates — a rendering storm or cache miss on one URL is the most common cause
+  - Verify CDN/reverse-proxy cache hit rate for the hot URL; a cache flush or stampede is a common trigger
+  - Review application logs for long response times on the affected endpoint
+  - Confirm servlet container max-threads config and whether the pool is actually exhausted
+  - Correlate with downstream latency (database, microservices) — slow dependency calls hold threads longest
+relatedSignatures:
+  - thread-lock-contention

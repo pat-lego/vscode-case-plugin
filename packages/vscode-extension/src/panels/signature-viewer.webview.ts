@@ -42,8 +42,8 @@ function operatorLabel(op: string): string {
   return OPERATOR_LABELS[op] ?? op;
 }
 
-function esc(s: string): string {
-  return s
+function esc(s: unknown): string {
+  return String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

@@ -123,7 +123,7 @@ function buildEvidence(matched: MatchedCondition[], signals: ExtractedSignals): 
             if (mon.lockHolderThread) {
               lines.push(`Lock holder: ${mon.lockHolderThread}`);
             }
-            if (mon.waitingThreadNames.length > 0) {
+            if (mon.waitingThreadNames?.length > 0) {
               const names = mon.waitingThreadNames.slice(0, 15);
               lines.push(`Waiting threads (${mon.waitingThreadCount}): ${names.join(', ')}`);
             }
@@ -133,12 +133,34 @@ function buildEvidence(matched: MatchedCondition[], signals: ExtractedSignals): 
       }
     }
 
+    // For active request thread count: show the top URLs being served
+    if (c.field === 'activeRequestThreadCount' && summary.activeRequestThreadCount > 0) {
+      const HTTP_REQUEST_RE = /\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\/[^\s]*)/;
+      const urlCounts = new Map<string, number>();
+      for (const dump of threadDumps) {
+        for (const fp of dump.stackFingerprints) {
+          for (const name of fp.threadNames) {
+            const m = HTTP_REQUEST_RE.exec(name);
+            if (m) {
+              const url = m[1] + ' ' + m[2].split('?')[0];
+              urlCounts.set(url, (urlCounts.get(url) ?? 0) + 1);
+            }
+          }
+        }
+      }
+      const top = [...urlCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      if (top.length > 0) {
+        lines.push('Top requested URLs:');
+        for (const [url, n] of top) lines.push(`  ${n} threads — ${url}`);
+      }
+    }
+
     // For blocked thread count: show which threads are BLOCKED and what they are waiting on
     if (c.field === 'blockedThreadCount' || c.field === 'synchronizedBlockedMonitorCount') {
       const blockedInfo: string[] = [];
       for (const dump of threadDumps) {
         for (const mon of dump.blockedMonitors) {
-          if (mon.waitingThreadNames.length > 0) {
+          if (mon.waitingThreadNames?.length > 0) {
             const names = mon.waitingThreadNames.slice(0, 10).join(', ');
             const holder = mon.lockHolderThread ? ` | lock held by: ${mon.lockHolderThread}` : '';
             blockedInfo.push(`${mon.waitingThreadCount} threads waiting on ${mon.monitorClass}${holder} — ${names}`);

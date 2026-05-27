@@ -33,6 +33,8 @@ export function parseIbmJ9(raw: string, capturedAt: Date): ThreadDumpSignals {
     t.frames.some(f => f.includes('java/io/') || f.includes('java/net/'))
   ).length;
   const gcThreadCount = threads.filter(t => GC_THREAD_PATTERN.test(t.name)).length;
+  const HTTP_REQUEST_PATTERN = /\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\//;
+  const activeRequestThreadCount = threads.filter(t => HTTP_REQUEST_PATTERN.test(t.name)).length;
 
   return {
     capturedAt,
@@ -42,6 +44,7 @@ export function parseIbmJ9(raw: string, capturedAt: Date): ThreadDumpSignals {
     blockedMonitors: [],
     ioThreadCount,
     gcThreadCount,
+    activeRequestThreadCount,
     format: 'ibm-j9'
   };
 }

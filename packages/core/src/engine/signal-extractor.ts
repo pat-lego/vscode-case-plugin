@@ -79,6 +79,14 @@ export interface ThreadDumpSummary {
   /** dominantActiveFingerprintCount / totalThreadCount */
   dominantActiveFingerprintRatio: number;
 
+  /**
+   * Maximum number of active HTTP request threads observed in any single dump.
+   * These are Jetty/Tomcat workers whose name contains an HTTP method + path,
+   * indicating they are currently handling a live inbound request.
+   * A value near or above 200 (AEM default Jetty max) indicates pool saturation.
+   */
+  activeRequestThreadCount: number;
+
   // ── Internal arrays — for evidence building and Claude context only ────────
   dominantFingerprints: StackFingerprint[];
   persistentBlockedMonitorAddresses: string[];
@@ -100,6 +108,7 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
   const timedWaitingThreadCount = Math.max(...dumps.map(d => d.stateCounts.TIMED_WAITING ?? 0));
   const ioThreadCount         = Math.max(...dumps.map(d => d.ioThreadCount));
   const gcThreadCount = Math.max(...dumps.map(d => d.gcThreadCount));
+  const activeRequestThreadCount = Math.max(...dumps.map(d => d.activeRequestThreadCount));
 
   const fingerprintMap = new Map<string, StackFingerprint[]>();
   for (const dump of dumps) {
@@ -246,6 +255,7 @@ export function extractSignals(dumps: ThreadDumpSignals[]): ExtractedSignals {
       synchronizedBlockedMonitorCount,
       dominantActiveFingerprintCount,
       dominantActiveFingerprintRatio,
+      activeRequestThreadCount,
       dominantFingerprints,
       persistentBlockedMonitorAddresses
     }
@@ -274,6 +284,7 @@ function emptySummary(): ThreadDumpSummary {
     synchronizedBlockedMonitorCount: 0,
     dominantActiveFingerprintCount: 0,
     dominantActiveFingerprintRatio: 0,
+    activeRequestThreadCount: 0,
     dominantFingerprints: [],
     persistentBlockedMonitorAddresses: []
   };

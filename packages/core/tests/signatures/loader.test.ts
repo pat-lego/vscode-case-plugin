@@ -131,9 +131,9 @@ describe('loadSignaturesFromDir — bundled signatures', () => {
   // Navigate from tests/ → project root → signatures/
   const BUNDLED_DIR = path.join(__dirname, '../../../../signatures');
 
-  it('loads all 4 bundled signatures', () => {
+  it('loads all bundled signatures', () => {
     const results = loadSignaturesFromDir(BUNDLED_DIR);
-    expect(results.length).toBeGreaterThanOrEqual(4);
+    expect(results.length).toBeGreaterThanOrEqual(3);
   });
 
   it('all bundled signatures have required fields', () => {
@@ -163,10 +163,9 @@ describe('loadSignaturesFromDir — bundled signatures', () => {
   it('bundled signature IDs match expected names', () => {
     const results = loadSignaturesFromDir(BUNDLED_DIR);
     const ids = results.map(s => s.id);
-    expect(ids).toContain('hot-endpoint');
-    expect(ids).toContain('db-pool-exhaustion');
-    expect(ids).toContain('full-gc-pause');
-    expect(ids).toContain('deadlock');
+    expect(ids).toContain('thread-lock-contention');
+    expect(ids).toContain('gc-pressure');
+    expect(ids).toContain('servlet-pool-saturation');
   });
 });
 

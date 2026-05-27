@@ -40,6 +40,11 @@ export function parseGeneric(raw: string, capturedAt: Date): ThreadDumpSignals {
     .filter(line => GC_THREAD_PATTERN.test(line.trim()))
     .length;
 
+  const HTTP_REQUEST_PATTERN = /\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\//;
+  const activeRequestThreadCount = raw.split('\n')
+    .filter(line => HTTP_REQUEST_PATTERN.test(line))
+    .length;
+
   return {
     capturedAt,
     totalThreadCount,
@@ -48,6 +53,7 @@ export function parseGeneric(raw: string, capturedAt: Date): ThreadDumpSignals {
     blockedMonitors: [],
     ioThreadCount: frames.filter(f => f.startsWith('java.io.') || f.startsWith('sun.nio.')).length,
     gcThreadCount,
+    activeRequestThreadCount,
     format: 'generic'
   };
 }

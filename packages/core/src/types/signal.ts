@@ -9,6 +9,9 @@ export interface ThreadDumpSignals {
   // These are always present — a non-zero count doesn't mean a pause is active.
   // A very high count relative to the app can indicate heavy GC activity.
   gcThreadCount: number;
+  // Threads whose names contain an HTTP method followed by a path — Jetty/Tomcat worker
+  // threads actively handling inbound HTTP requests (not idle pool members).
+  activeRequestThreadCount: number;
   format: ThreadDumpFormat;
 }
 

@@ -1,0 +1,26 @@
+id: gc-pressure
+name: High Garbage Collection Pressure
+version: "1.0"
+description: >
+  The JVM has an elevated number of active GC worker threads beyond the typical resident
+  baseline. Under normal operation a JVM keeps a small set of permanent housekeeping threads
+  (VM Thread, Finalizer, Reference Handler, Signal Dispatcher) plus a few GC infrastructure
+  threads — typically 4–12 total depending on heap size and collector (G1, ZGC, Shenandoah,
+  Parallel, CMS). When a collection cycle is actively running, additional parallel or
+  concurrent worker threads spin up. 15+ GC-named threads indicates a collection cycle is
+  in progress and competing for CPU, which degrades application throughput. Correlate with
+  GC logs for pause times and heap utilisation to confirm severity.
+conditions:
+  - field: gcThreadCount
+    operator: gte
+    value: 15
+    description: JVM GC-related threads active in the dump (workers + infrastructure)
+confidence: medium
+nextSteps:
+  - Correlate with GC logs — look for full GC events, long pause times (> 200 ms), and old-gen occupancy
+  - Check heap sizing: if old-gen is near capacity the collector will run more aggressive concurrent cycles
+  - Profile object allocation rate on the hot request path — large short-lived objects (byte[], char[]) drive GC pressure
+  - Review application caches for unbounded growth — caches that prevent objects from being collected are a common culprit
+  - Consider tuning heap region size and InitiatingHeapOccupancyPercent if old-gen is consistently above 60%
+  - If using Parallel GC, consider switching to G1 or ZGC for lower pause times under high allocation rates
+relatedSignatures: []

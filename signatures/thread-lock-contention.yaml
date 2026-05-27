@@ -1,0 +1,26 @@
+id: thread-lock-contention
+name: Synchronized Thread Contention
+version: "1.0"
+description: >
+  Multiple threads are stuck in the Java BLOCKED state, meaning they are queued waiting to
+  acquire a synchronized monitor held by another thread. BLOCKED threads consume a slot in
+  the servlet thread pool but cannot make progress, so contention cascades: each new request
+  that hits the same code path joins the queue, eventually exhausting the pool. 10+ BLOCKED
+  threads indicates serious lock contention regardless of server type (Tomcat, Jetty, JBoss,
+  WebSphere, etc.). A single slow or stuck lock holder is nearly always the root cause —
+  identify it first before tuning concurrency parameters.
+conditions:
+  - field: blockedThreadCount
+    operator: gte
+    value: 10
+    description: Threads in BLOCKED state (synchronized monitor contention)
+confidence: high
+nextSteps:
+  - Identify the lock holder — the evidence section shows which thread holds the contended monitor and its current stack
+  - Check whether the lock holder is stuck on an external call (network, disk, database) inside a synchronized block — this is the most common pattern
+  - Look for framework-level synchronization on hot paths (class loaders, scripting engines, connection factories) that may not be obvious from application code
+  - Consider replacing synchronized blocks on hot paths with java.util.concurrent data structures (ConcurrentHashMap, ReentrantReadWriteLock, etc.)
+  - If the same monitor recurs across multiple dumps, the holder is persistently stuck — investigate resource exhaustion or deadlock
+  - A thread count spike combined with lock contention suggests the pool is absorbing backpressure from a single bottleneck
+relatedSignatures:
+  - servlet-pool-saturation
