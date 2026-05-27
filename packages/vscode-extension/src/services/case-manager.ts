@@ -118,6 +118,24 @@ export class CaseManager {
     if (ev) { ev.group = group; this.save(caseId); }
   }
 
+  setEvidenceDisplayName(caseId: string, evidenceId: string, displayName: string) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+    const ev = session.meta.evidence.find(e => e.id === evidenceId);
+    if (ev) { ev.displayName = displayName; this.save(caseId); }
+  }
+
+  updateEvidenceFilePath(caseId: string, evidenceId: string, newFilePath: string) {
+    const session = this.sessions.get(caseId);
+    if (!session) return;
+    const ev = session.meta.evidence.find(e => e.id === evidenceId);
+    if (ev) {
+      ev.filePath = newFilePath;
+      ev.displayName = undefined;
+      this.save(caseId);
+    }
+  }
+
   updateFindings(caseId: string, findings: Finding[]) {
     const session = this.sessions.get(caseId);
     if (!session) return;
@@ -392,6 +410,7 @@ export class CaseManager {
           capturedAt: isNaN(capturedAtRaw.getTime()) ? new Date() : capturedAtRaw,
           filePath: String(raw['file_path'] ?? ''),
           ...(raw['group'] ? { group: String(raw['group']) } : {}),
+          ...(raw['display_name'] ? { displayName: String(raw['display_name']) } : {}),
         };
         if (raw['stored_file']) {
           const storedPath = path.join(caseDir, String(raw['stored_file']));
@@ -498,6 +517,7 @@ export class CaseManager {
           file_path: ev.filePath,
           stored_file: storedFile,
           ...(ev.group ? { group: ev.group } : {}),
+          ...(ev.displayName ? { display_name: ev.displayName } : {}),
         };
       });
 

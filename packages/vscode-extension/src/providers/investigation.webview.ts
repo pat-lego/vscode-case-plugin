@@ -91,7 +91,7 @@ export class InvestigationWebview {
           status: session.meta.status,
           evidence: session.meta.evidence.map(e => ({
             id: e.id,
-            name: e.filePath ? path.basename(e.filePath) : e.id,
+            name: e.displayName ?? (e.filePath ? path.basename(e.filePath) : e.id),
             type: e.type,
             timestamp: e.capturedAt instanceof Date && !isNaN(e.capturedAt.getTime())
               ? e.capturedAt.toISOString()
@@ -306,6 +306,65 @@ export class InvestigationWebview {
       case 'reviewEvidenceWithAI':
         vscode.commands.executeCommand('investigator.reviewEvidenceWithAI', caseId, String(msg.id ?? ''));
         break;
+
+      case 'renameEvidence': {
+        const session = this.caseManager.getSession(caseId);
+        if (!session || !session.casePath) break;
+        const evId = String(msg.id ?? '');
+        const ev = session.meta.evidence.find(e => e.id === evId);
+        if (!ev) break;
+        const oldBasename = ev.filePath ? path.basename(ev.filePath) : ev.source;
+        const newName = await vscode.window.showInputBox({
+          prompt: 'Rename file on disk',
+          value: oldBasename,
+          ignoreFocusOut: true,
+          validateInput: v => {
+            if (!v.trim()) return 'Name cannot be empty';
+            if (/[/\\]/.test(v)) return 'Name cannot contain path separators';
+            return null;
+          }
+        });
+        if (!newName || newName.trim() === oldBasename) break;
+        const trimmed = newName.trim();
+        const caseDir = path.join(session.casePath, caseId);
+        let newFilePath: string;
+        const fileInCaseDir = !!(ev.filePath && ev.filePath.startsWith(caseDir + path.sep));
+        if (fileInCaseDir && fs.existsSync(ev.filePath!)) {
+          newFilePath = path.join(path.dirname(ev.filePath!), trimmed);
+          try { fs.renameSync(ev.filePath!, newFilePath); }
+          catch (err) { vscode.window.showErrorMessage(`Failed to rename: ${err}`); break; }
+        } else if (ev.rawContent) {
+          newFilePath = path.join(caseDir, trimmed);
+          try {
+            fs.mkdirSync(caseDir, { recursive: true });
+            fs.writeFileSync(newFilePath, ev.rawContent, 'utf-8');
+          } catch (err) { vscode.window.showErrorMessage(`Failed to write renamed file: ${err}`); break; }
+        } else if (ev.filePath && fs.existsSync(ev.filePath)) {
+          newFilePath = path.join(caseDir, trimmed);
+          try {
+            fs.mkdirSync(caseDir, { recursive: true });
+            fs.copyFileSync(ev.filePath, newFilePath);
+          } catch (err) { vscode.window.showErrorMessage(`Failed to copy for rename: ${err}`); break; }
+        } else {
+          vscode.window.showErrorMessage('Cannot rename: file not found on disk.');
+          break;
+        }
+        this.caseManager.updateEvidenceFilePath(caseId, evId, newFilePath);
+        panel.webview.postMessage({ type: 'evidenceRenamed', id: evId, name: trimmed });
+
+        // Update note links: replace both label and href for the old filename
+        const notes = session.meta.notes ?? '';
+        if (notes && oldBasename) {
+          const escaped = oldBasename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const linkRe = new RegExp('\\[([^\\]]*)\\]\\((\\.{1,2}\\/(?:[^/)]*/)*)' + escaped + '\\)', 'g');
+          const updated = notes.replace(linkRe, (_m: string, _label: string, prefix: string) => `[${trimmed}](${prefix}${trimmed})`);
+          if (updated !== notes) {
+            this.caseManager.updateNotes(caseId, updated);
+            panel.webview.postMessage({ type: 'notesUpdated', notes: updated });
+          }
+        }
+        break;
+      }
 
       case 'dropEvidence': {
         const caseDir = this.caseManager.getCaseDir(caseId);
@@ -803,6 +862,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 <!-- Context menu for evidence items -->
 <div class="ctx-menu" id="ctx-menu">
   <div class="ctx-item" id="ctx-open">Open in Editor &#x2197;</div>
+  <div class="ctx-item" id="ctx-rename">Rename...</div>
   <div class="ctx-item" id="ctx-copy-ref">Copy reference</div>
   <div class="ctx-item" id="ctx-ai-review">Send to AI for Review...</div>
   <div class="ctx-sep"></div>
@@ -1202,6 +1262,20 @@ window.addEventListener('message', function(evt) {
     if (m.title) { var ct = document.getElementById('case-title'); if (ct) ct.textContent = m.title; }
   }
   else if (m.type === 'evidenceAdded') addEvidence(m.item);
+  else if (m.type === 'notesUpdated') {
+    var ta3 = document.getElementById('notes-area');
+    if (ta3) { ta3.value = m.notes; updateEmbeddedRefs(m.notes); }
+    if (previewMode) { document.getElementById('notes-preview').innerHTML = renderMd(m.notes); }
+  }
+  else if (m.type === 'evidenceRenamed') {
+    var it = items.find(function(i) { return i.id === m.id; });
+    if (it) {
+      it.name = m.name;
+      var row = document.querySelector('.ev-item[data-ev-id="' + m.id + '"]');
+      var lbl = row && row.querySelector('.ev-name');
+      if (lbl) lbl.textContent = m.name;
+    }
+  }
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
   else if (m.type === 'groupRemoved') removeGroup(m.group);
   else if (m.type === 'jiraExport') {
@@ -1751,7 +1825,7 @@ document.addEventListener('contextmenu', function(e) {
   e.preventDefault();
   ctxEvId = evItem.dataset.evId;
   // Keep menu inside viewport
-  var menuW = 180, menuH = 110;
+  var menuW = 180, menuH = 140;
   var x = Math.min(e.clientX, window.innerWidth - menuW - 4);
   var y = Math.min(e.clientY, window.innerHeight - menuH - 4);
   ctxMenu.style.left = x + 'px';
@@ -1767,6 +1841,12 @@ function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxEvId = null; }
 document.getElementById('ctx-open').addEventListener('click', function(e) {
   e.stopPropagation();
   if (ctxEvId) send('openEvidence', { id: ctxEvId });
+  hideCtxMenu();
+});
+
+document.getElementById('ctx-rename').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (ctxEvId) send('renameEvidence', { id: ctxEvId });
   hideCtxMenu();
 });
 

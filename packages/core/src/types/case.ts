@@ -18,4 +18,5 @@ export interface EvidenceItem {
   filePath: string;
   rawContent?: string;
   group?: string;
+  displayName?: string;
 }
