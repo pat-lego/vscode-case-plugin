@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # core must build first — vscode-extension imports from its dist/
+      - name: Build core
+        working-directory: packages/core
+        run: npm run build
+
+      - name: Test core
+        working-directory: packages/core
+        run: npm test
+
+      - name: Typecheck & build browser extension
+        working-directory: packages/browser-extension
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Typecheck & build VS Code extension
+        working-directory: packages/vscode-extension
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Test VS Code extension
+        working-directory: packages/vscode-extension
+        run: npm test
+
+      # Package .vsix only on main — requires the build to have succeeded
+      - name: Package VS Code extension (.vsix)
+        if: github.ref == 'refs/heads/main'
+        working-directory: packages/vscode-extension
+        run: npx --yes @vscode/vsce package --no-dependencies
+
+      - name: Upload .vsix artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-investigator-${{ github.sha }}
+          path: packages/vscode-extension/*.vsix
+          retention-days: 30
