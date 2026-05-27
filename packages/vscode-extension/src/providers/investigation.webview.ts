@@ -1490,8 +1490,14 @@ document.getElementById('export-jira-btn').addEventListener('click', function() 
 
 document.getElementById('export-copy-btn').addEventListener('click', function() {
   var text = document.getElementById('export-area').value;
+  var notesHtml = renderMdForJira(document.getElementById('notes-area').value);
   var btn = this;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
+  if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem) {
+    var htmlBlob = new Blob([notesHtml], { type: 'text/html' });
+    var textBlob = new Blob([text], { type: 'text/plain' });
+    navigator.clipboard.write([new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })])
+      .catch(function() { fallbackCopy(text); });
+  } else if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
   } else { fallbackCopy(text); }
   btn.textContent = 'Copied!';
@@ -2197,6 +2203,131 @@ function renderMd(src) {
     // Paragraph
     closeList();
     out += '<p>' + inlineRender(line) + '</p>';
+  }
+
+  closeList();
+  if (inFence) out += '</code></pre>';
+  return out;
+}
+
+// Inline renderer for JIRA HTML export: produces clean HTML with no webview-specific attrs.
+// Local image/file links become plain text (filename), external links become <a> tags.
+function inlineRenderJira(text) {
+  var out = '';
+  var i = 0;
+  while (i < text.length) {
+    var c = text[i];
+    if (c === '&') { out += '&amp;'; i++; continue; }
+    if (c === '<') { out += '&lt;'; i++; continue; }
+    if (c === '>') { out += '&gt;'; i++; continue; }
+    if (c === '\`') {
+      var e1 = text.indexOf('\`', i + 1);
+      if (e1 === -1) { out += '\`'; i++; continue; }
+      out += '<code>' + esc(text.slice(i + 1, e1)) + '</code>';
+      i = e1 + 1; continue;
+    }
+    if (c === '*' && text[i+1] === '*' && text[i+2] === '*') {
+      var e2 = text.indexOf('***', i + 3);
+      if (e2 === -1) { out += '*'; i++; continue; }
+      out += '<strong><em>' + esc(text.slice(i + 3, e2)) + '</em></strong>';
+      i = e2 + 3; continue;
+    }
+    if (c === '*' && text[i+1] === '*') {
+      var e3 = text.indexOf('**', i + 2);
+      if (e3 === -1) { out += '*'; i++; continue; }
+      out += '<strong>' + esc(text.slice(i + 2, e3)) + '</strong>';
+      i = e3 + 2; continue;
+    }
+    if (c === '*') {
+      var e4 = text.indexOf('*', i + 1);
+      if (e4 === -1) { out += '*'; i++; continue; }
+      out += '<em>' + esc(text.slice(i + 1, e4)) + '</em>';
+      i = e4 + 1; continue;
+    }
+    // Image or link: local refs become plain filename text, external become <a>
+    if (c === '!' && text[i+1] === '[') {
+      var imgBEnd = text.indexOf(']', i + 2);
+      if (imgBEnd !== -1 && text[imgBEnd + 1] === '(') {
+        var imgPEnd = findLinkEnd(text, imgBEnd + 2);
+        if (imgPEnd !== -1) {
+          var imgAlt = text.slice(i + 2, imgBEnd);
+          out += esc(imgAlt || text.slice(imgBEnd + 2, imgPEnd).split('/').pop());
+          i = imgPEnd + 1; continue;
+        }
+      }
+      out += '!'; i++; continue;
+    }
+    if (c === '[') {
+      var bEnd = text.indexOf(']', i + 1);
+      if (bEnd !== -1 && text[bEnd + 1] === '(') {
+        var pEnd = findLinkEnd(text, bEnd + 2);
+        if (pEnd !== -1) {
+          var linkHref = text.slice(bEnd + 2, pEnd);
+          var linkLabel = text.slice(i + 1, bEnd);
+          var isLocal = linkHref.startsWith('./') || linkHref.startsWith('../');
+          if (isLocal) {
+            out += esc(linkHref.split('/').pop());
+          } else {
+            out += '<a href="' + esc(linkHref) + '">' + esc(linkLabel) + '</a>';
+          }
+          i = pEnd + 1; continue;
+        }
+      }
+      out += '['; i++; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+// Renders markdown to clean HTML for pasting into JIRA's TinyMCE rich-text editor.
+function renderMdForJira(src) {
+  var lines = src.split('\\n');
+  var out = '';
+  var inFence = false;
+  var inUl = false;
+  var inOl = false;
+
+  function closeList() {
+    if (inUl) { out += '</ul>'; inUl = false; }
+    if (inOl) { out += '</ol>'; inOl = false; }
+  }
+
+  for (var li = 0; li < lines.length; li++) {
+    var line = lines[li];
+    var trimmed = line.trim();
+    if (line.slice(0, 3) === '\`\`\`') {
+      closeList();
+      if (inFence) { out += '</code></pre>'; inFence = false; }
+      else { out += '<pre><code>'; inFence = true; }
+      continue;
+    }
+    if (inFence) { out += esc(line) + '\\n'; continue; }
+    var hLv = 0;
+    while (hLv < 6 && line[hLv] === '#') hLv++;
+    if (hLv > 0 && line[hLv] === ' ') {
+      closeList();
+      out += '<h' + hLv + '>' + inlineRenderJira(line.slice(hLv + 1)) + '</h' + hLv + '>';
+      continue;
+    }
+    if (trimmed === '---' || trimmed === '***') { closeList(); out += '<hr>'; continue; }
+    if (line.slice(0, 2) === '- ' || line.slice(0, 2) === '* ') {
+      if (inOl) { out += '</ol>'; inOl = false; }
+      if (!inUl) { out += '<ul>'; inUl = true; }
+      out += '<li>' + inlineRenderJira(line.slice(2)) + '</li>';
+      continue;
+    }
+    var d = 0;
+    while (d < line.length && line[d] >= '0' && line[d] <= '9') d++;
+    if (d > 0 && line[d] === '.' && line[d + 1] === ' ') {
+      if (inUl) { out += '</ul>'; inUl = false; }
+      if (!inOl) { out += '<ol>'; inOl = true; }
+      out += '<li>' + inlineRenderJira(line.slice(d + 2)) + '</li>';
+      continue;
+    }
+    if (trimmed === '') { closeList(); out += '<p></p>'; continue; }
+    closeList();
+    out += '<p>' + inlineRenderJira(line) + '</p>';
   }
 
   closeList();
