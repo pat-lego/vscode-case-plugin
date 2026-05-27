@@ -177,25 +177,30 @@ describe('CaseManager.reopenCase', () => {
 
 describe('CaseManager.getAllCases', () => {
   it('returns cases sorted by updatedAt descending', () => {
-    const tmpDir = makeTmpDirTracked();
-    mockCasePaths([tmpDir]);
-    const ctx = makeContext();
-    const cm = new CaseManager(ctx);
+    vi.useFakeTimers();
+    try {
+      const tmpDir = makeTmpDirTracked();
+      mockCasePaths([tmpDir]);
+      const ctx = makeContext();
+      const cm = new CaseManager(ctx);
 
-    cm.createCase('CASE-ALPHA', 'First Case');
-    // Small delay to ensure different timestamps
-    const now = Date.now();
-    // Manually set updatedAt via updateNotes to advance the timestamp
-    cm.updateNotes('CASE-ALPHA', 'note alpha');
-    cm.createCase('CASE-BETA', 'Second Case');
-    cm.updateNotes('CASE-BETA', 'note beta');
+      vi.setSystemTime(new Date('2024-01-01T10:00:00Z'));
+      cm.createCase('CASE-ALPHA', 'First Case');
+      cm.updateNotes('CASE-ALPHA', 'note alpha');
 
-    const all = cm.getAllCases();
-    // BETA was updated last, should be first
-    const ids = all.map(c => c.id);
-    const alphaIdx = ids.indexOf('CASE-ALPHA');
-    const betaIdx = ids.indexOf('CASE-BETA');
-    expect(betaIdx).toBeLessThan(alphaIdx);
+      vi.setSystemTime(new Date('2024-01-01T10:00:01Z'));
+      cm.createCase('CASE-BETA', 'Second Case');
+      cm.updateNotes('CASE-BETA', 'note beta');
+
+      const all = cm.getAllCases();
+      // BETA was updated last, should be first
+      const ids = all.map(c => c.id);
+      const alphaIdx = ids.indexOf('CASE-ALPHA');
+      const betaIdx = ids.indexOf('CASE-BETA');
+      expect(betaIdx).toBeLessThan(alphaIdx);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

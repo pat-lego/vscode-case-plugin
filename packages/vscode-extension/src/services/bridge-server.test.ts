@@ -97,6 +97,10 @@ describe('BridgeServer.handleMessage', () => {
 
   it('processes a screenshot capture and writes a file', async () => {
     const tmpDir = os.tmpdir();
+    // Remove any leftover from a prior run so uniqueFilePath always lands on the base name.
+    for (const f of fs.readdirSync(tmpDir).filter(f => f.startsWith('screenshot-1234'))) {
+      fs.unlinkSync(path.join(tmpDir, f));
+    }
     const { bridge, analysisService } = await makeBridge('case-001', '');
 
     const pngBase64 = Buffer.from('PNG_PLACEHOLDER').toString('base64');
