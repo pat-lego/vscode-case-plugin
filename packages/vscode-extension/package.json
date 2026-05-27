@@ -151,10 +151,6 @@
     "configuration": {
       "title": "Incident Investigator",
       "properties": {
-        "investigator.obsidianVaultPath": {
-          "type": "string",
-          "description": "Path to your Obsidian vault for exporting cases"
-        },
         "investigator.engineerInitials": {
           "type": "string",
           "description": "Your initials, used in case IDs (e.g. PL)"
@@ -162,11 +158,6 @@
         "investigator.signaturesPath": {
           "type": "string",
           "description": "Path to signature library YAML files"
-        },
-        "investigator.threadCountThreshold": {
-          "type": "number",
-          "default": 500,
-          "description": "Thread count above which an anomaly is flagged"
         },
         "investigator.bridgePort": {
           "type": "number",

@@ -669,7 +669,10 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .notes-preview strong{font-weight:700}
 .notes-preview em{font-style:italic}
 .notes-preview .emb-ref-link{font-family:var(--vscode-editor-font-family,monospace);font-size:.9em;color:var(--vscode-textLink-foreground,#3794ff);background:var(--vscode-sideBar-background);padding:1px 5px;border-radius:2px}
-#notes-refs-wrap{flex-shrink:0;max-height:45%;display:none;flex-direction:column;border-top:2px solid var(--vscode-panel-border);overflow:hidden}
+#notes-refs-wrap{flex-shrink:0;max-height:45%;display:none;flex-direction:column;overflow:hidden}
+#notes-refs-drag{height:6px;cursor:ns-resize;flex-shrink:0;background:transparent;border-top:2px solid var(--vscode-panel-border);position:relative}
+#notes-refs-drag:hover,#notes-refs-drag.dragging{border-top-color:var(--vscode-focusBorder)}
+#notes-refs-drag::after{content:'';position:absolute;top:1px;left:50%;transform:translateX(-50%);width:24px;height:2px;border-radius:1px;background:var(--vscode-panel-border)}
 #notes-refs-searchbar{display:flex;align-items:center;gap:4px;padding:3px 6px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;background:var(--vscode-sideBar-background)}
 #notes-refs-search-input{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));padding:2px 5px;font-size:10px;border-radius:2px;outline:none;font-family:inherit}
 #notes-refs-search-input:focus{border-color:var(--vscode-focusBorder)}
@@ -755,6 +758,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
     <textarea class="notes-area" id="notes-area" placeholder="Write your investigation notes here&#x2026;&#10;&#10;What did you observe? What have you tried? What&#x27;s the current hypothesis?"></textarea>
     <div class="notes-preview" id="notes-preview"></div>
     <div id="notes-refs-wrap">
+      <div id="notes-refs-drag"></div>
       <div id="notes-refs-searchbar">
         <input id="notes-refs-search-input" placeholder="Search snippets..." autocomplete="off" spellcheck="false">
         <span id="notes-refs-count"></span>
@@ -957,7 +961,10 @@ function updateEmbeddedRefs(notesText) {
   capEmbRefsHeight();
 }
 
+var embRefsUserHeight = null; // set once user manually drags; bypasses auto-cap
+
 function capEmbRefsHeight() {
+  if (embRefsUserHeight !== null) return; // user owns the height
   requestAnimationFrame(function() {
     var container = document.getElementById('notes-embedded-refs');
     if (!container) return;
@@ -979,6 +986,36 @@ document.getElementById('notes-embedded-refs').addEventListener('click', functio
   hdr.parentElement.classList.toggle('collapsed');
   capEmbRefsHeight();
 });
+
+// Drag handle: resize the snippets panel
+(function() {
+  var handle = document.getElementById('notes-refs-drag');
+  var wrap   = document.getElementById('notes-refs-wrap');
+  var startY, startH;
+
+  handle.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = wrap.offsetHeight;
+    handle.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  function onMove(e) {
+    var delta  = e.clientY - startY;        // positive = drag down = shrink panel
+    var newH   = Math.max(48, startH - delta);
+    embRefsUserHeight = newH;
+    wrap.style.height    = newH + 'px';
+    wrap.style.maxHeight = newH + 'px';
+  }
+
+  function onUp() {
+    handle.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+})();
 
 // -- Layout ------------------------------------------------------------
 const MIN_W = {evidence: 110, notes: 140, viewer: 200};
