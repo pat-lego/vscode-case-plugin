@@ -2766,6 +2766,10 @@ function convertToJiraMarkup(md: string): string {
       .replace(/\*\*(.+?)\*\*/g,    '*$1*')
       .replace(/__(.+?)__/g,        '*$1*')
       .replace(/\*(.+?)\*/g,        '_$1_')
+      .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, content) => {
+        const body = content.trimEnd();
+        return lang ? `{code:${lang}}\n${body}\n{code}` : `{code}\n${body}\n{code}`;
+      })
       .replace(/`(.+?)`/g,          '{{$1}}')
       .replace(/^---+$/gm,          '----')
   );
