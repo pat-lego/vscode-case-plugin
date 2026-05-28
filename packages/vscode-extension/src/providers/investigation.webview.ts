@@ -160,10 +160,39 @@ export class InvestigationWebview {
         const newEvidence: Array<{id: string; name: string; type: string; timestamp: string}> = [];
         let snippetIdx = 1;
 
-        // Extract fenced code blocks → save as evidence files (idempotent: skip if already tracked)
-        const processedNotes = rawNotes.replace(/```[\s\S]*?```/g, (match) => {
+        const JIRA_MAX = 32767;
+        const INLINE_LINE_LIMIT = 65;
+
+        // Collect all fenced code blocks in document order.
+        const blocks: Array<{ full: string; inner: string; lineCount: number }> = [];
+        rawNotes.replace(/```[\s\S]*?```/g, (match) => {
           const inner = match.slice(3, -3).replace(/^[^\n]*\n/, '').trim();
+          blocks.push({ full: match, inner, lineCount: inner.split('\n').length });
+          return match;
+        });
+
+        // Large blocks (>= INLINE_LINE_LIMIT lines) are always extracted to files.
+        const toExtract = new Set<number>(
+          blocks.flatMap((b, i) => b.lineCount >= INLINE_LINE_LIMIT ? [i] : [])
+        );
+
+        // Check if keeping small blocks inline would blow the JIRA character limit.
+        // Build a draft replacing only large blocks with a short placeholder.
+        let draftIdx = -1;
+        const draft = rawNotes.replace(/```[\s\S]*?```/g, () => {
+          draftIdx++;
+          return toExtract.has(draftIdx) ? '[snippet.txt](./snippet.txt)' : blocks[draftIdx].full;
+        });
+        if (convertToJiraMarkup(draft).length >= JIRA_MAX) {
+          // Small blocks also need extraction to stay under the limit.
+          for (let i = 0; i < blocks.length; i++) toExtract.add(i);
+        }
+
+        // Assign filenames to extracted blocks and save them as evidence files.
+        const fileNames = new Map<number, string>();
+        for (const i of toExtract) {
           const fileName = `snippet-${snippetIdx++}.txt`;
+          fileNames.set(i, fileName);
           if (caseDir) {
             try {
               fs.mkdirSync(caseDir, { recursive: true });
@@ -172,7 +201,7 @@ export class InvestigationWebview {
               const session2 = this.caseManager.getSession(caseId);
               const alreadyTracked = session2?.meta.evidence.some(e => e.filePath === filePath);
               if (!alreadyTracked) {
-                fs.writeFileSync(filePath, inner, 'utf-8');
+                fs.writeFileSync(filePath, blocks[i].inner, 'utf-8');
                 const item: import('@incident-investigator/core').EvidenceItem = {
                   id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                   type: 'generic',
@@ -185,7 +214,14 @@ export class InvestigationWebview {
               }
             } catch { /* best-effort */ }
           }
-          return `[${fileName}](./${fileName})`;
+        }
+
+        // Build processed notes: replace extracted blocks with file refs, leave the rest inline.
+        let blockIdx = -1;
+        const processedNotes = rawNotes.replace(/```[\s\S]*?```/g, () => {
+          blockIdx++;
+          const fileName = fileNames.get(blockIdx);
+          return fileName ? `[${fileName}](./${fileName})` : blocks[blockIdx].full;
         });
 
         if (newEvidence.length > 0) {
@@ -404,6 +440,14 @@ export class InvestigationWebview {
         const fileSrc = String(msg.src ?? '');
         const relPath = fileSrc.startsWith('./') ? fileSrc.slice(2) : fileSrc;
         const absPath = path.isAbsolute(relPath) ? relPath : path.join(caseDir, relPath);
+
+        const BINARY_INLINE_EXTS = new Set([
+          '.zip','.tar','.gz','.bz2','.7z','.rar',
+          '.pdf','.pptx','.ppt','.xlsx','.xls','.docx','.doc',
+          '.png','.jpg','.jpeg','.gif','.webp','.svg','.bmp','.ico',
+          '.exe','.dmg','.pkg','.jar','.class','.pyc','.so','.dylib','.dll',
+        ]);
+
         let content: string | undefined;
         // Try the path resolved relative to the case directory
         try { content = fs.readFileSync(absPath, 'utf-8'); } catch { /* not found */ }
@@ -416,7 +460,10 @@ export class InvestigationWebview {
           if (ev?.rawContent) {
             content = ev.rawContent;
           } else if (ev?.filePath) {
-            try { content = fs.readFileSync(ev.filePath, 'utf-8'); } catch { /* not found */ }
+            const evExt = path.extname(ev.filePath).toLowerCase();
+            if (!BINARY_INLINE_EXTS.has(evExt)) {
+              try { content = fs.readFileSync(ev.filePath, 'utf-8'); } catch { /* not found */ }
+            }
           }
         }
         if (content !== undefined) {
@@ -1086,8 +1133,8 @@ function updateEmbeddedRefs(notesText) {
     var href = notesText.slice(cb + 2, pe);
     var lhref = href.toLowerCase();
     var isLocal = lhref.startsWith('./') || lhref.startsWith('../');
-    var isImgExt = lhref.endsWith('.png') || lhref.endsWith('.jpg') || lhref.endsWith('.jpeg') || lhref.endsWith('.gif') || lhref.endsWith('.webp');
-    if (isLocal && !isImgExt && !seen[href]) {
+    var isBinaryExt = /\.(zip|tar|gz|bz2|7z|rar|pdf|pptx?|xlsx?|docx?|exe|dmg|pkg|jar|class|pyc|so|dylib|dll|png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(lhref);
+    if (isLocal && !isBinaryExt && !seen[href]) {
       seen[href] = true;
       ordered.push({ href: href, fname: href.split('/').pop() });
     }
