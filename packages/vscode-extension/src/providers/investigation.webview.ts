@@ -21,7 +21,10 @@ export class InvestigationWebview {
     });
 
     // Push external case state changes (e.g. reopen from sidebar, notes heading change) to open panels.
-    // Also detect evidence added from outside (e.g. static analysis) and push evidenceAdded.
+    // Detect evidence added from outside this panel (e.g. static analysis) and push evidenceAdded.
+    // The diff is deferred via setImmediate so that any pushEvidenceAdded() call on the same
+    // synchronous tick (which fires before onCaseUpdated returns, because vscode.EventEmitter is
+    // synchronous) has already registered its ID — preventing double delivery.
     this.caseManager.onCaseUpdated(updatedCaseId => {
       const panel = this.panels.get(updatedCaseId);
       if (!panel) return;
@@ -29,20 +32,24 @@ export class InvestigationWebview {
       if (!session) return;
       panel.webview.postMessage({ type: 'caseUpdated', status: session.meta.status, title: session.meta.title });
 
-      const known = this.knownEvidenceIds.get(updatedCaseId);
-      if (!known) return;
-      for (const e of session.meta.evidence) {
-        if (known.has(e.id)) continue;
-        this.pushEvidenceAdded(updatedCaseId, {
-          id: e.id,
-          name: e.displayName ?? (e.filePath ? path.basename(e.filePath) : e.id),
-          type: e.type,
-          timestamp: e.capturedAt instanceof Date && !isNaN(e.capturedAt.getTime())
-            ? e.capturedAt.toISOString()
-            : new Date().toISOString(),
-          group: e.group
-        });
-      }
+      setImmediate(() => {
+        const known = this.knownEvidenceIds.get(updatedCaseId);
+        if (!known) return;
+        const current = this.caseManager.getSession(updatedCaseId);
+        if (!current) return;
+        for (const e of current.meta.evidence) {
+          if (known.has(e.id)) continue;
+          this.pushEvidenceAdded(updatedCaseId, {
+            id: e.id,
+            name: e.displayName ?? (e.filePath ? path.basename(e.filePath) : e.id),
+            type: e.type,
+            timestamp: e.capturedAt instanceof Date && !isNaN(e.capturedAt.getTime())
+              ? e.capturedAt.toISOString()
+              : new Date().toISOString(),
+            group: e.group
+          });
+        }
+      });
     });
 
     this.bridgeServer.onStatusChange(connected => {
