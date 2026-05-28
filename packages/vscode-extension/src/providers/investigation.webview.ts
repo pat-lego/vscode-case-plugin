@@ -983,7 +983,7 @@ function runNotesSearch() {
   var ta = document.getElementById('notes-area');
   var countEl = document.getElementById('notes-search-count');
   notesSearchMatches = [];
-  notesSearchCur = 0;
+  notesSearchCur = -1; // -1 so the first navNotesMatch(+1) lands on index 0
   if (!query) { countEl.textContent = ''; return; }
   var text = ta.value;
   var lower = text.toLowerCase();
@@ -995,25 +995,39 @@ function runNotesSearch() {
     notesSearchMatches.push({ start: p, end: p + qLen });
     p = lower.indexOf(lowerQ, p + qLen);
   }
-  if (notesSearchMatches.length === 0) {
-    countEl.textContent = 'no results';
-    return;
-  }
-  focusNotesMatch(0);
+  countEl.textContent = notesSearchMatches.length === 0 ? 'no results' : '0 / ' + notesSearchMatches.length;
+}
+
+// Measures the pixel offset of charIndex inside a textarea using a mirror div,
+// accounting for line wrapping (unlike a simple lineCount * lineHeight approach).
+function notesMatchScrollTop(ta, charIndex) {
+  var style = window.getComputedStyle(ta);
+  var mirror = document.createElement('div');
+  mirror.style.cssText =
+    'position:absolute;top:0;left:0;visibility:hidden;pointer-events:none;' +
+    'overflow:hidden;white-space:pre-wrap;word-wrap:break-word;box-sizing:border-box;' +
+    'width:' + ta.clientWidth + 'px;' +
+    'padding:' + style.paddingTop + ' ' + style.paddingRight + ' ' + style.paddingBottom + ' ' + style.paddingLeft + ';' +
+    'font-family:' + style.fontFamily + ';font-size:' + style.fontSize + ';' +
+    'font-weight:' + style.fontWeight + ';line-height:' + style.lineHeight + ';' +
+    'letter-spacing:' + style.letterSpacing + ';';
+  mirror.textContent = ta.value.slice(0, charIndex);
+  document.body.appendChild(mirror);
+  var top = mirror.scrollHeight;
+  document.body.removeChild(mirror);
+  return top;
 }
 
 function focusNotesMatch(idx) {
   var ta = document.getElementById('notes-area');
   var countEl = document.getElementById('notes-search-count');
   if (!notesSearchMatches.length) return;
-  notesSearchCur = (idx + notesSearchMatches.length) % notesSearchMatches.length;
+  notesSearchCur = ((idx % notesSearchMatches.length) + notesSearchMatches.length) % notesSearchMatches.length;
   var m = notesSearchMatches[notesSearchCur];
   ta.focus();
   ta.setSelectionRange(m.start, m.end);
-  // Scroll the textarea so the match is visible
-  var linesBefore = ta.value.slice(0, m.start).split('\\n').length - 1;
-  var lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 18;
-  ta.scrollTop = Math.max(0, linesBefore * lineHeight - ta.clientHeight / 2);
+  var matchTop = notesMatchScrollTop(ta, m.start);
+  ta.scrollTop = Math.max(0, matchTop - ta.clientHeight / 2);
   countEl.textContent = (notesSearchCur + 1) + ' / ' + notesSearchMatches.length;
 }
 
@@ -1024,9 +1038,8 @@ function navNotesMatch(dir) {
 
 (function() {
   var inp = document.getElementById('notes-search-input');
-  inp.addEventListener('input', debounce(runNotesSearch, 200));
   inp.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') { e.preventDefault(); navNotesMatch(e.shiftKey ? -1 : 1); }
+    if (e.key === 'Enter') { e.preventDefault(); runNotesSearch(); navNotesMatch(e.shiftKey ? -1 : 1); }
     if (e.key === 'Escape') { e.preventDefault(); closeNotesSearch(); }
   });
   document.getElementById('notes-search-prev').addEventListener('click', function() { navNotesMatch(-1); });
@@ -2632,24 +2645,79 @@ function localHrefToJira(href: string): string {
   return JIRA_IMAGE_EXTS.has(path.extname(base).toLowerCase()) ? `!${base}!` : `[^${base}]`;
 }
 
+// Depth-counting link-end finder — mirrors client-side findLinkEnd.
+// Handles URLs that contain balanced parentheses (e.g. Splunk query strings).
+function findLinkEndServer(text: string, start: number): number {
+  let depth = 0;
+  for (let j = start; j < text.length; j++) {
+    if (text[j] === '(') depth++;
+    else if (text[j] === ')') { if (depth === 0) return j; depth--; }
+  }
+  return -1;
+}
+
+// Converts markdown image/link syntax to JIRA markup using a proper parser
+// rather than a regex, so URLs with literal parentheses are handled correctly.
+function convertLinksToJira(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    // Image: ![alt](src)
+    if (text[i] === '!' && text[i + 1] === '[') {
+      const altEnd = text.indexOf(']', i + 2);
+      if (altEnd !== -1 && text[altEnd + 1] === '(') {
+        const urlEnd = findLinkEndServer(text, altEnd + 2);
+        if (urlEnd !== -1) {
+          out += localHrefToJira(text.slice(altEnd + 2, urlEnd));
+          i = urlEnd + 1;
+          continue;
+        }
+      }
+      out += text[i++];
+      continue;
+    }
+    // Link: [text](href)
+    if (text[i] === '[') {
+      const textEnd = text.indexOf(']', i + 1);
+      if (textEnd !== -1 && text[textEnd + 1] === '(') {
+        const urlEnd = findLinkEndServer(text, textEnd + 2);
+        if (urlEnd !== -1) {
+          const linkText = text.slice(i + 1, textEnd);
+          const href = text.slice(textEnd + 2, urlEnd);
+          const lh = href.toLowerCase();
+          const isLocal = lh.startsWith('./') || lh.startsWith('../');
+          if (isLocal) {
+            out += localHrefToJira(href);
+          } else {
+            // Escape any literal ] in the URL so it doesn't close JIRA's [text|url] syntax
+            out += '[' + linkText + '|' + href.replace(/\]/g, '%5D') + ']';
+          }
+          i = urlEnd + 1;
+          continue;
+        }
+      }
+      out += text[i++];
+      continue;
+    }
+    out += text[i++];
+  }
+  return out;
+}
+
 function convertToJiraMarkup(md: string): string {
-  return md
-    .replace(/^######\s+(.+)$/gm, 'h6. $1')
-    .replace(/^#####\s+(.+)$/gm,  'h5. $1')
-    .replace(/^####\s+(.+)$/gm,   'h4. $1')
-    .replace(/^###\s+(.+)$/gm,    'h3. $1')
-    .replace(/^##\s+(.+)$/gm,     'h2. $1')
-    .replace(/^#\s+(.+)$/gm,      'h1. $1')
-    .replace(/\*\*\*(.+?)\*\*\*/g, '*_$1_*')
-    .replace(/\*\*(.+?)\*\*/g,    '*$1*')
-    .replace(/__(.+?)__/g,        '*$1*')
-    .replace(/\*(.+?)\*/g,        '_$1_')
-    .replace(/`(.+?)`/g,          '{{$1}}')
-    // Markdown images: ![alt](./path) or ![alt](path) -> JIRA attachment macro
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, _alt, href) => localHrefToJira(href))
-    // Local relative links: [text](./path) or [text](../path) -> attachment macro
-    .replace(/\[([^\]]+)\]\((\.\.?\/[^)]+)\)/g, (_m, _text, href) => localHrefToJira(href))
-    // External links: [text](url) -> [text|url]
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '[$1|$2]')
-    .replace(/^---+$/gm,          '----');
+  return convertLinksToJira(
+    md
+      .replace(/^######\s+(.+)$/gm, 'h6. $1')
+      .replace(/^#####\s+(.+)$/gm,  'h5. $1')
+      .replace(/^####\s+(.+)$/gm,   'h4. $1')
+      .replace(/^###\s+(.+)$/gm,    'h3. $1')
+      .replace(/^##\s+(.+)$/gm,     'h2. $1')
+      .replace(/^#\s+(.+)$/gm,      'h1. $1')
+      .replace(/\*\*\*(.+?)\*\*\*/g, '*_$1_*')
+      .replace(/\*\*(.+?)\*\*/g,    '*$1*')
+      .replace(/__(.+?)__/g,        '*$1*')
+      .replace(/\*(.+?)\*/g,        '_$1_')
+      .replace(/`(.+?)`/g,          '{{$1}}')
+      .replace(/^---+$/gm,          '----')
+  );
 }
