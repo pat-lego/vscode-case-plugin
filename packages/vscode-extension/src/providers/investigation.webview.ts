@@ -161,19 +161,19 @@ export class InvestigationWebview {
         let snippetIdx = 1;
 
         const JIRA_MAX = 32767;
-        const INLINE_LINE_LIMIT = 65;
+        const INLINE_CHAR_LIMIT = 5000;
 
         // Collect all fenced code blocks in document order.
-        const blocks: Array<{ full: string; inner: string; lineCount: number }> = [];
+        const blocks: Array<{ full: string; inner: string }> = [];
         rawNotes.replace(/```[\s\S]*?```/g, (match) => {
           const inner = match.slice(3, -3).replace(/^[^\n]*\n/, '').trim();
-          blocks.push({ full: match, inner, lineCount: inner.split('\n').length });
+          blocks.push({ full: match, inner });
           return match;
         });
 
-        // Large blocks (>= INLINE_LINE_LIMIT lines) are always extracted to files.
+        // Blocks over the character limit are always extracted to files.
         const toExtract = new Set<number>(
-          blocks.flatMap((b, i) => b.lineCount >= INLINE_LINE_LIMIT ? [i] : [])
+          blocks.flatMap((b, i) => b.inner.length > INLINE_CHAR_LIMIT ? [i] : [])
         );
 
         // Check if keeping small blocks inline would blow the JIRA character limit.
@@ -814,6 +814,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .export-dialog-hdr{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
 .export-dialog-title{font-size:12px;font-weight:700;flex:1}
 .export-char-count{font-size:11px;color:var(--vscode-descriptionForeground);white-space:nowrap}
+.export-title-toggle{font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;color:var(--vscode-descriptionForeground);user-select:none}
 .export-area{flex:1;resize:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:none;padding:10px 12px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.6;min-height:320px;outline:none}
 </style>
 </head>
@@ -916,6 +917,7 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
     <div class="export-dialog-hdr">
       <span class="export-dialog-title">JIRA Export</span>
       <span class="export-char-count" id="export-char-count"></span>
+      <label class="export-title-toggle"><input type="checkbox" id="export-title-cb"> Include title</label>
       <button class="btn" id="export-copy-btn" style="font-size:11px">Copy</button>
       <button class="btn" id="export-close-btn" style="font-size:11px">&#x2715;</button>
     </div>
@@ -1146,7 +1148,7 @@ function updateEmbeddedRefs(notesText) {
     var href = notesText.slice(cb + 2, pe);
     var lhref = href.toLowerCase();
     var isLocal = lhref.startsWith('./') || lhref.startsWith('../');
-    var isBinaryExt = /\.(zip|tar|gz|bz2|7z|rar|pdf|pptx?|xlsx?|docx?|exe|dmg|pkg|jar|class|pyc|so|dylib|dll|png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(lhref);
+    var isBinaryExt = /\\.(zip|tar|gz|bz2|7z|rar|pdf|pptx?|xlsx?|docx?|exe|dmg|pkg|jar|class|pyc|so|dylib|dll|png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(lhref);
     if (isLocal && !isBinaryExt && !seen[href]) {
       seen[href] = true;
       ordered.push({ href: href, fname: href.split('/').pop() });
@@ -1442,12 +1444,9 @@ window.addEventListener('message', function(evt) {
   else if (m.type === 'evidenceRemoved') removeEvidence(m.id);
   else if (m.type === 'groupRemoved') removeGroup(m.group);
   else if (m.type === 'jiraExport') {
-    var ea = document.getElementById('export-area');
-    var em = document.getElementById('export-modal');
-    var ec = document.getElementById('export-char-count');
-    ea.value = m.text;
-    if (ec) ec.textContent = m.text.length + ' / 32,767 chars';
-    em.style.display = 'flex';
+    exportFullText = m.text;
+    applyExportTitle();
+    document.getElementById('export-modal').style.display = 'flex';
     if (m.newNotes !== undefined) {
       var ta2 = document.getElementById('notes-area');
       ta2.value = m.newNotes;
@@ -1544,13 +1543,36 @@ function fallbackCopy(text) {
 }
 
 // -- Export to JIRA modal ------------------------------------------------------
+var exportFullText = '';
+
+function applyExportTitle() {
+  var cb = document.getElementById('export-title-cb');
+  var ea = document.getElementById('export-area');
+  var ec = document.getElementById('export-char-count');
+  var text = (cb && !cb.checked)
+    ? exportFullText.replace(/^h\\d\\. [^\\n]*\\n?\\n?/, '')
+    : exportFullText;
+  ea.value = text;
+  if (ec) ec.textContent = text.length + ' / 32,767 chars';
+}
+
+document.getElementById('export-title-cb').addEventListener('change', applyExportTitle);
+
 document.getElementById('export-jira-btn').addEventListener('click', function() {
   send('exportJira', { notes: document.getElementById('notes-area').value });
 });
 
 document.getElementById('export-copy-btn').addEventListener('click', function() {
   var text = document.getElementById('export-area').value;
+  var cb = document.getElementById('export-title-cb');
   var notesHtml = renderMdForJira(document.getElementById('notes-area').value);
+  if (cb && !cb.checked && notesHtml.slice(0, 2) === '<h') {
+    var hCloseStart = notesHtml.indexOf('</h');
+    if (hCloseStart !== -1) {
+      var hCloseEnd = notesHtml.indexOf('>', hCloseStart);
+      if (hCloseEnd !== -1) { notesHtml = notesHtml.slice(hCloseEnd + 1).replace(/^\s+/, ''); }
+    }
+  }
   var btn = this;
   if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem) {
     var htmlBlob = new Blob([notesHtml], { type: 'text/html' });
