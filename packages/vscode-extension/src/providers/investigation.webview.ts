@@ -8,6 +8,7 @@ import { BridgeServer } from '../services/bridge-server';
 
 export class InvestigationWebview {
   private panels = new Map<string, vscode.WebviewPanel>();
+  private knownEvidenceIds = new Map<string, Set<string>>();
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -20,12 +21,28 @@ export class InvestigationWebview {
     });
 
     // Push external case state changes (e.g. reopen from sidebar, notes heading change) to open panels.
+    // Also detect evidence added from outside (e.g. static analysis) and push evidenceAdded.
     this.caseManager.onCaseUpdated(updatedCaseId => {
       const panel = this.panels.get(updatedCaseId);
       if (!panel) return;
       const session = this.caseManager.getSession(updatedCaseId);
       if (!session) return;
       panel.webview.postMessage({ type: 'caseUpdated', status: session.meta.status, title: session.meta.title });
+
+      const known = this.knownEvidenceIds.get(updatedCaseId);
+      if (!known) return;
+      for (const e of session.meta.evidence) {
+        if (known.has(e.id)) continue;
+        this.pushEvidenceAdded(updatedCaseId, {
+          id: e.id,
+          name: e.displayName ?? (e.filePath ? path.basename(e.filePath) : e.id),
+          type: e.type,
+          timestamp: e.capturedAt instanceof Date && !isNaN(e.capturedAt.getTime())
+            ? e.capturedAt.toISOString()
+            : new Date().toISOString(),
+          group: e.group
+        });
+      }
     });
 
     this.bridgeServer.onStatusChange(connected => {
@@ -39,10 +56,7 @@ export class InvestigationWebview {
       const evArr = session?.meta.evidence ?? [];
       const ev = evArr[evArr.length - 1];
       if (ev) {
-        this.panels.get(caseId)?.webview.postMessage({
-          type: 'evidenceAdded',
-          item: { id: ev.id, name, type: ev.type, timestamp: ev.capturedAt.toISOString() }
-        });
+        this.pushEvidenceAdded(caseId, { id: ev.id, name, type: ev.type, timestamp: ev.capturedAt.toISOString() });
       }
     });
   }
@@ -70,10 +84,15 @@ export class InvestigationWebview {
     this.caseManager.setActiveCase(caseId);
 
     panel.webview.onDidReceiveMessage(msg => this.handleMessage(caseId, msg));
-    panel.onDidDispose(() => this.panels.delete(caseId));
+    panel.onDidDispose(() => { this.panels.delete(caseId); this.knownEvidenceIds.delete(caseId); });
     panel.onDidChangeViewState(e => {
       if (e.webviewPanel.active) this.caseManager.setActiveCase(caseId);
     });
+  }
+
+  private pushEvidenceAdded(caseId: string, item: { id: string; [key: string]: unknown }) {
+    this.knownEvidenceIds.get(caseId)?.add(item.id);
+    this.panels.get(caseId)?.webview.postMessage({ type: 'evidenceAdded', item });
   }
 
   private async handleMessage(caseId: string, msg: Record<string, unknown>) {
@@ -85,6 +104,7 @@ export class InvestigationWebview {
         this.caseManager.refreshDiskEvidence(caseId);
         const session = this.caseManager.getSession(caseId);
         if (!session) return;
+        this.knownEvidenceIds.set(caseId, new Set(session.meta.evidence.map(e => e.id)));
         panel.webview.postMessage({ type: 'bridgeStatus', connected: this.bridgeServer.isConnected() });
         panel.webview.postMessage({
           type: 'initialState',
@@ -141,7 +161,7 @@ export class InvestigationWebview {
           const group = filePaths.length >= 2 ? path.basename(dir) : undefined;
           for (const filePath of filePaths) {
             const added = this.addFileEvidence(caseId, filePath, caseDir, group);
-            if (added) panel.webview.postMessage({ type: 'evidenceAdded', item: added.item });
+            if (added) this.pushEvidenceAdded(caseId, added.item);
             if (added?.findings?.length) panel.webview.postMessage({ type: 'findings', findings: added.findings });
           }
         }
@@ -426,7 +446,7 @@ export class InvestigationWebview {
         } else {
           const added = this.addFileEvidence(caseId, dropPath, caseDir);
           if (added) {
-            panel.webview.postMessage({ type: 'evidenceAdded', item: added.item });
+            this.pushEvidenceAdded(caseId, added.item);
             if (added.findings?.length) panel.webview.postMessage({ type: 'findings', findings: added.findings });
           }
         }
@@ -558,7 +578,7 @@ export class InvestigationWebview {
               const content = fs.readFileSync(srcPath, 'utf-8');
               const { evidenceItem, findings } = this.analysisService.processEvidence(caseId, entry.name, content, destPath);
               this.caseManager.setEvidenceGroup(caseId, evidenceItem.id, folderName);
-              panel?.webview.postMessage({ type: 'evidenceAdded', item: { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString(), group: folderName } });
+              this.pushEvidenceAdded(caseId, { id: evidenceItem.id, name: displayName, type: evidenceItem.type, timestamp: evidenceItem.capturedAt.toISOString(), group: folderName });
               if (findings.length) panel?.webview.postMessage({ type: 'findings', findings });
             } catch {}
           } else {
@@ -573,7 +593,7 @@ export class InvestigationWebview {
               group: folderName,
             };
             this.caseManager.addEvidence(caseId, item as import('@incident-investigator/core').EvidenceItem);
-            panel?.webview.postMessage({ type: 'evidenceAdded', item: { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString(), group: folderName } });
+            this.pushEvidenceAdded(caseId, { id: item.id, name: displayName, type: evType, timestamp: item.capturedAt.toISOString(), group: folderName });
           }
         }
       }
@@ -615,7 +635,7 @@ export class InvestigationWebview {
         const result = this.addFileEvidence(caseId, filePath, caseDir, group);
         if (result) {
           added++;
-          panel?.webview.postMessage({ type: 'evidenceAdded', item: result.item });
+          this.pushEvidenceAdded(caseId, result.item);
           if (result.findings?.length) panel?.webview.postMessage({ type: 'findings', findings: result.findings });
         }
       }

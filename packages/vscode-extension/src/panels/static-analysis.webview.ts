@@ -3,10 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseThreadDump, extractSignals } from '@incident-investigator/core';
 import { AnalysisService, extractTimestamp } from '../services/analysis-service';
+import { CaseManager } from '../services/case-manager';
 import { IILogger, nullLogger } from '../logger';
 
 export class StaticAnalysisPanel {
-  static show(_context: vscode.ExtensionContext, analysisService: AnalysisService, log: IILogger = nullLogger) {
+  static show(_context: vscode.ExtensionContext, analysisService: AnalysisService, caseManager: CaseManager, log: IILogger = nullLogger) {
     const panel = vscode.window.createWebviewPanel(
       'investigator.staticAnalysis',
       'Static Analysis',
@@ -15,6 +16,14 @@ export class StaticAnalysisPanel {
     );
 
     panel.webview.html = buildHtml();
+
+    let lastResults: {
+      findings: any[];
+      threadDetails: any;
+      counts: { threadDumps: number; logs: number; topOutputs: number; parseErrors: number };
+      parseErrors: string[];
+      fileNames: string[];
+    } | null = null;
 
     const handleMessage = async (msg: Record<string, unknown>) => {
       if (msg.type === 'browse') {
@@ -118,23 +127,148 @@ export class StaticAnalysisPanel {
           };
         }
 
-        panel.webview.postMessage({
-          type: 'results',
-          findings,
-          threadDetails,
-          counts: {
-            threadDumps: signals.length,
-            logs: logFiles.length,
-            topOutputs: topFiles.length,
-            parseErrors: parseErrors.length
-          },
-          parseErrors
-        });
+        const counts = {
+          threadDumps: signals.length,
+          logs: logFiles.length,
+          topOutputs: topFiles.length,
+          parseErrors: parseErrors.length
+        };
+        lastResults = { findings, threadDetails, counts, parseErrors, fileNames: tdFiles.map(f => f.name) };
+        panel.webview.postMessage({ type: 'results', findings, threadDetails, counts, parseErrors });
+      }
+
+      if (msg.type === 'addToCase') {
+        const caseId = caseManager.getActiveCaseId();
+        if (!caseId) {
+          panel.webview.postMessage({ type: 'addToCaseResult', ok: false, error: 'No active case open.' });
+          return;
+        }
+        if (!lastResults) {
+          panel.webview.postMessage({ type: 'addToCaseResult', ok: false, error: 'No analysis results to save.' });
+          return;
+        }
+        const caseDir = caseManager.getCaseDir(caseId);
+        if (!caseDir) {
+          panel.webview.postMessage({ type: 'addToCaseResult', ok: false, error: 'Could not determine case directory.' });
+          return;
+        }
+        const report = generateAnalysisReport(lastResults);
+        const ts = new Date();
+        const stamp = `${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}h${String(ts.getMinutes()).padStart(2,'0')}m`;
+        const filename = `static-analysis-${stamp}.txt`;
+        const filePath = path.join(caseDir, filename);
+        try {
+          fs.writeFileSync(filePath, report, 'utf-8');
+          const evId = `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          caseManager.addEvidence(caseId, {
+            id: evId,
+            type: 'generic',
+            source: filename,
+            capturedAt: ts,
+            filePath
+          });
+          log.info('analysis', 'addToCase success', { caseId, filename });
+          panel.webview.postMessage({ type: 'addToCaseResult', ok: true, filename });
+        } catch (err) {
+          log.error('analysis', 'addToCase failed', { err: String(err) });
+          panel.webview.postMessage({ type: 'addToCaseResult', ok: false, error: String(err) });
+        }
       }
     };
 
     panel.webview.onDidReceiveMessage(msg => { void handleMessage(msg as Record<string, unknown>); });
   }
+}
+
+function generateAnalysisReport(results: {
+  findings: any[];
+  threadDetails: any;
+  counts: { threadDumps: number; logs: number; topOutputs: number; parseErrors: number };
+  parseErrors: string[];
+  fileNames: string[];
+}): string {
+  const lines: string[] = [];
+  const hr = (n: number) => '-'.repeat(n);
+
+  lines.push('Static Analysis Report');
+  lines.push('='.repeat(22));
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push('');
+
+  if (results.fileNames.length) {
+    lines.push('Files Analyzed:');
+    results.fileNames.forEach(f => lines.push(`  - ${f}`));
+  }
+  const c = results.counts;
+  lines.push(`Thread Dumps: ${c.threadDumps}  |  Logs: ${c.logs}  |  Top Outputs: ${c.topOutputs}`);
+  if (c.parseErrors) {
+    lines.push(`Parse Errors: ${c.parseErrors} (${results.parseErrors.join(', ')})`);
+  }
+  lines.push('');
+
+  if (results.threadDetails) {
+    const td = results.threadDetails;
+    lines.push('THREAD STATISTICS');
+    lines.push(hr(17));
+    lines.push(`Total: ${td.totalThreadCount}  |  Blocked: ${td.blockedThreadCount}  |  Waiting: ${td.waitingThreadCount}  |  Timed Waiting: ${td.timedWaitingThreadCount || 0}`);
+    if (td.suspiciousTimedWaitingCount > 0) {
+      lines.push(`WARNING: ${td.suspiciousTimedWaitingCount} stuck TIMED_WAITING threads detected${td.suspiciousTimedWaitingKeyFrame ? ` (${td.suspiciousTimedWaitingKeyFrame})` : ''}`);
+    }
+    lines.push('');
+  }
+
+  if (results.findings && results.findings.length) {
+    lines.push(`SIGNATURE MATCHES (${results.findings.length} found)`);
+    lines.push(hr(30));
+    results.findings.forEach((f: any) => {
+      lines.push(`[${String(f.confidence).toUpperCase()}] ${f.signatureName}`);
+      if (f.evidence && f.evidence.length) {
+        lines.push('Evidence:');
+        f.evidence.forEach((ev: string) => lines.push(`  ${ev}`));
+      }
+      lines.push('');
+    });
+  } else {
+    lines.push('SIGNATURE MATCHES');
+    lines.push(hr(17));
+    lines.push('No signature matches found.');
+    lines.push('');
+  }
+
+  if (results.threadDetails) {
+    const td = results.threadDetails;
+    if (td.topFingerprints && td.topFingerprints.length) {
+      lines.push('DOMINANT BLOCKED / WAITING STACKS');
+      lines.push(hr(33));
+      td.topFingerprints.forEach((fp: any) => {
+        lines.push(`${fp.state} x${fp.count}`);
+        if (fp.topFrame) { lines.push(`  Key frame: ${fp.topFrame}`); }
+        if (fp.frames && fp.frames.length > 1) {
+          fp.frames.slice(0, 6).forEach((fr: string) => lines.push(`  at ${fr}`));
+        }
+        if (fp.threadNames && fp.threadNames.length) {
+          lines.push(`  Threads (${fp.threadNames.length}): ${fp.threadNames.join(', ')}`);
+        }
+        lines.push('');
+      });
+    }
+
+    if (td.topMonitors && td.topMonitors.length) {
+      lines.push('LOCK CONTENTION');
+      lines.push(hr(15));
+      td.topMonitors.forEach((mon: any) => {
+        lines.push(`Monitor: ${mon.monitorClass}`);
+        lines.push(`  Waiting threads: ${mon.waitingThreadCount}`);
+        if (mon.lockHolderThread) { lines.push(`  Held by: ${mon.lockHolderThread}`); }
+        if (mon.waitingThreadNames && mon.waitingThreadNames.length) {
+          lines.push(`  Waiting: ${mon.waitingThreadNames.join(', ')}`);
+        }
+        lines.push('');
+      });
+    }
+  }
+
+  return lines.join('\n');
 }
 
 function buildHtml(): string {
@@ -204,6 +338,9 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
 .thread-names{font-size:10px;color:var(--vscode-descriptionForeground);word-break:break-word}
 .monitor-class{font-family:var(--vscode-editor-font-family,monospace);font-size:10px;color:var(--vscode-foreground);word-break:break-all;margin-bottom:2px}
 .monitor-holder{font-size:10px;color:var(--vscode-descriptionForeground)}
+.add-case-btn{padding:3px 10px;font-size:10px;background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-panel-border);border-radius:2px;cursor:pointer}
+.add-case-btn:hover:not(:disabled){background:var(--vscode-button-secondaryHoverBackground)}
+.add-case-btn:disabled{opacity:.4;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -268,7 +405,11 @@ h1{font-size:14px;font-weight:700;margin-bottom:6px}
 
 <!-- Results -->
 <div class="results" id="results">
-  <div class="results-title">Results</div>
+  <div class="results-title" style="display:flex;align-items:center;gap:10px">
+    <span>Results</span>
+    <button class="add-case-btn" id="add-case-btn">+ Add to Case</button>
+    <span id="add-case-msg" style="font-size:10px;color:var(--vscode-descriptionForeground)"></span>
+  </div>
   <div id="summary-box"></div>
   <div id="findings-list"></div>
   <div id="thread-details"></div>
@@ -342,6 +483,13 @@ document.getElementById('run-btn').addEventListener('click', function() {
   vscode.postMessage({ type: 'analyze', threadDumps: files.threadDumps, logs: files.logs, topOutputs: files.topOutputs });
 });
 
+// Add to Case button
+document.getElementById('add-case-btn').addEventListener('click', function() {
+  this.disabled = true;
+  document.getElementById('add-case-msg').textContent = '';
+  vscode.postMessage({ type: 'addToCase' });
+});
+
 // Finding cards toggle via delegation
 document.getElementById('findings-list').addEventListener('click', function(e) {
   var hdr = e.target && e.target.closest && e.target.closest('.finding-hdr');
@@ -358,6 +506,18 @@ window.addEventListener('message', function(e) {
   }
   if (m.type === 'results') {
     renderResults(m);
+  }
+  if (m.type === 'addToCaseResult') {
+    var msgEl = document.getElementById('add-case-msg');
+    var addBtn = document.getElementById('add-case-btn');
+    addBtn.disabled = false;
+    if (m.ok) {
+      msgEl.textContent = 'Saved: ' + m.filename;
+      msgEl.style.color = '#4ec9b0';
+    } else {
+      msgEl.textContent = 'Error: ' + (m.error || 'unknown error');
+      msgEl.style.color = 'var(--vscode-errorForeground)';
+    }
   }
 });
 

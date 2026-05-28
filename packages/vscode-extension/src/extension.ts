@@ -181,7 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
       terminal.sendText(`${cliCmd} < "${tmpFile}"`);
     }),
     vscode.commands.registerCommand('investigator.runStaticAnalysis', () => {
-      StaticAnalysisPanel.show(context, analysisService, log);
+      StaticAnalysisPanel.show(context, analysisService, caseManager, log);
     }),
     vscode.commands.registerCommand('investigator.editSignature', (item: SignatureItem) => {
       const sig = sigService.getById(item.sigId);
