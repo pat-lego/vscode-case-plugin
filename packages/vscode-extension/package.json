@@ -78,7 +78,8 @@
       { "command": "investigator.editSignature", "title": "Edit Signature", "icon": "$(edit)" },
       { "command": "investigator.newSignature", "title": "New Signature", "icon": "$(add)" },
       { "command": "investigator.addToCase", "title": "Add to Case", "icon": "$(add)" },
-      { "command": "investigator.reviewEvidenceWithAI", "title": "Send Evidence to AI", "icon": "$(robot)" }
+      { "command": "investigator.reviewEvidenceWithAI", "title": "Send Evidence to AI", "icon": "$(robot)" },
+      { "command": "investigator.queryThreadDumps", "title": "Query Thread Dumps", "icon": "$(search)" }
     ],
     "menus": {
       "view/title": [
@@ -113,6 +114,11 @@
           "command": "investigator.addToCase",
           "when": "resourceScheme == 'file'",
           "group": "7_modification@99"
+        },
+        {
+          "command": "investigator.queryThreadDumps",
+          "when": "resourceScheme == 'file'",
+          "group": "7_modification@100"
         }
       ],
       "view/item/context": [

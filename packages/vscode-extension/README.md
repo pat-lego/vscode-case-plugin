@@ -106,7 +106,184 @@ When no signature matches confidently, send the case to Claude for a full review
 
 ---
 
-## Signature condition fields
+## Thread Query Language
+
+The **Thread Query** panel lets you run Splunk-style queries directly against the parsed threads from your loaded dumps. Open it via the **Thread Query** button in the investigation workspace header.
+
+### Syntax
+
+```
+[filter] [| where filter] [| stats count [by field[, field2]]] [| top N]
+```
+
+Filters and `| where` clauses compose as AND. Multiple `| where` pipes narrow the result progressively.
+
+---
+
+### Filter fields
+
+| Field | Matches against | Example |
+|---|---|---|
+| `thread` | Thread name (glob) | `thread=*http-nio*` |
+| `state` | Thread state | `state=WAITING` |
+| `frame` | Any frame in the stack (glob) | `frame=*HikariPool*` |
+| `keyframe` | First non-JVM frame (glob) | `keyframe=*ServiceRegistry*` |
+| `topframe` | Top-of-stack frame (glob) | `topframe=*Unsafe.park*` |
+| `class` | Class extracted from keyframe | `class=*HikariPool*` |
+| `package` | Package extracted from keyframe | `package=com.zaxxer*` |
+| `method` | Method extracted from keyframe | `method=getConnection` |
+| `stackdepth` | Number of frames in the stack | `stackdepth>=10` |
+
+### Operators
+
+| Operator | Works on | Example |
+|---|---|---|
+| `=` | String / glob | `state=BLOCKED`, `thread=*b2c*` |
+| `!=` | String or number | `state!=RUNNABLE`, `stackdepth!=12` |
+| `>` `>=` `<` `<=` | Number | `stackdepth>=10`, `stackdepth<5` |
+| `IN (...)` | String list | `state IN (BLOCKED, WAITING)` |
+| `AND` | Combine predicates | `state=WAITING AND thread=*b2c*` |
+| `OR` | Either predicate | `state=BLOCKED OR state=WAITING` |
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `\| where <filter>` | Narrow results with an additional filter |
+| `\| stats count by <field>` | Group and count by a field, sorted by count desc |
+| `\| stats count by <f1>, <f2>` | Group by multiple fields |
+| `\| stats count` | Return a single `{ count: N }` row |
+| `\| top N` | Keep only the top N rows (use after stats) |
+
+---
+
+### Examples
+
+#### Counting and grouping
+
+```
+# How many threads are in each state?
+| stats count by state
+
+# What are threads stuck on — top bottlenecks by keyframe?
+| stats count by keyframe
+
+# Break down by both state and keyframe
+| stats count by state, keyframe
+
+# Top 5 hottest code paths across all threads
+| stats count by keyframe | top 5
+```
+
+#### Filtering by thread name and state
+
+```
+# All threads handling /content/b2c requests
+thread=*b2c*
+
+# b2c threads that are stuck waiting
+thread=*b2c* AND state=WAITING
+
+# b2c threads doing actual work (not idle or waiting)
+thread=*b2c* AND state=RUNNABLE
+
+# Exclude idle threads, then count what the rest are doing
+state!=RUNNABLE | stats count by state
+```
+
+#### Querying stack frames
+
+```
+# Which threads are waiting on a database connection pool?
+frame=*HikariPool*
+
+# Threads stuck in OSGi service activation (Felix cold-start latch)
+frame=*ServiceRegistry*
+
+# Threads blocked waiting on an Elasticsearch result queue
+frame=*ElasticResultRowAsyncIterator*
+
+# Threads doing recursive JCR tree traversal
+frame=*checkChildrenRecursively*
+
+# Anything touching ConfigurationUtils — could be direct or indirect
+frame=*ConfigurationUtils*
+```
+
+#### Piping filters (Splunk-style `| where`)
+
+```
+# WAITING threads that are also b2c requests
+state=WAITING | where thread=*b2c*
+
+# b2c threads, then narrow to those stuck in OSGi, then count what they're waiting on
+thread=*b2c* | where frame=*ServiceRegistry* | stats count by keyframe
+
+# Narrow by frame and thread name, then group
+frame=*ContentFragmentUtils* | where thread=*b2c* | stats count by state
+```
+
+#### Counting with context
+
+```
+# How many b2c threads total?
+thread=*b2c* | stats count
+
+# How many b2c threads are hitting Elasticsearch?
+thread=*b2c* AND frame=*ElasticResultRowAsyncIterator* | stats count
+
+# Which OSGi call path is most congested?
+# (distinguish by the frame that triggered the Felix lookup)
+frame=*ServiceRegistry* | stats count by keyframe
+```
+
+#### Stack depth
+
+```
+# Threads with deep stacks (often stuck mid-call-chain)
+stackdepth>=15
+
+# Find shallow non-b2c threads (idle pool members)
+state!=RUNNABLE AND stackdepth<5
+
+# Distribution of stack depths across WAITING threads
+state=WAITING | stats count by stackdepth
+```
+
+#### Combining everything
+
+```
+# Full triage: what are b2c threads doing, ranked by frequency?
+thread=*b2c* | stats count by state, keyframe
+
+# Identify the dominant bottleneck among non-idle b2c threads
+thread=*b2c* AND state!=RUNNABLE | stats count by keyframe | top 3
+
+# Confirm all WAITING threads share a single blocking point
+state=WAITING AND frame=*ServiceRegistry* | stats count by keyframe
+
+# Which packages are RUNNABLE threads spending time in?
+thread=*b2c* AND state=RUNNABLE | stats count by package
+```
+
+---
+
+### Row fields returned (no stats)
+
+When no `stats` command is used, each matched thread produces one row with these fields:
+
+| Field | Value |
+|---|---|
+| `thread` | Full thread name |
+| `state` | `RUNNABLE` / `WAITING` / `TIMED_WAITING` / `BLOCKED` |
+| `keyframe` | First non-JVM frame |
+| `topframe` | Top-of-stack frame |
+| `class` | Class name extracted from keyframe |
+| `package` | Package extracted from keyframe |
+| `method` | Method name extracted from keyframe |
+| `stackdepth` | Number of frames in the stack |
+
+---
 
 The engine evaluates signatures by resolving named fields from the computed signal summary. All fields below are available in signature YAML `conditions`:
 

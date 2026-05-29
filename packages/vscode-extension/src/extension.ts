@@ -16,6 +16,7 @@ import { SignatureViewerPanel } from './panels/signature-viewer.webview';
 import { ManualSignatureBuilderPanel } from './panels/manual-signature-builder.webview';
 import { CaseResolutionPanel } from './panels/case-resolution.webview';
 import { StaticAnalysisPanel } from './panels/static-analysis.webview';
+import { ThreadQueryPanel } from './panels/thread-query.webview';
 import { createLogger } from './logger';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -238,6 +239,14 @@ export function activate(context: vscode.ExtensionContext) {
       const terminal = vscode.window.createTerminal(`AI Review -- ${evName}`);
       terminal.show();
       terminal.sendText(`${cliCmd} < "${tmpFile}"`);
+    }),
+    vscode.commands.registerCommand('investigator.queryThreadDumps', (uri?: vscode.Uri, allUris?: vscode.Uri[]) => {
+      const uris = allUris?.length ? allUris : uri ? [uri] : [];
+      if (!uris.length) {
+        vscode.window.showWarningMessage('Incident Investigator: select one or more thread dump files first.');
+        return;
+      }
+      ThreadQueryPanel.show(context, uris);
     }),
     vscode.commands.registerCommand('investigator.addToCase', async (uri?: vscode.Uri, allUris?: vscode.Uri[]) => {
       const uris = allUris?.length ? allUris : uri ? [uri] : [];

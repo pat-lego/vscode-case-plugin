@@ -1,4 +1,5 @@
 import { ThreadDumpSignals, ThreadState, StackFingerprint, BlockedMonitor } from '../../types/signal';
+import { Thread } from '../../types/thread';
 
 // Matches JVM GC thread names across HotSpot (Parallel, G1, ZGC, Shenandoah), CMS, and IBM J9
 const GC_THREAD_PATTERN = /^(GC |Gang |G1 |ConcurrentMark|concurrent mark|ZWorker|ZDirector|ZStat|ZRemap|Shenandoah|VM Thread|Finalizer|Reference Handler|Signal Dispatcher)/i;
@@ -10,11 +11,32 @@ interface RawThread {
   waitingOnMonitor?: string;
   waitingOnMonitorClass?: string;
   lockedMonitors: string[];
+  nid?: string;
+  elapsed?: number;
 }
 
 export function parseJstack(raw: string, capturedAt: Date): ThreadDumpSignals {
   const threads = extractThreads(raw);
   return buildSignals(threads, capturedAt, 'jstack');
+}
+
+export function parseJstackThreads(raw: string): Thread[] {
+  return extractThreads(raw).map(rawToThread);
+}
+
+function rawToThread(t: RawThread): Thread {
+  return {
+    name: t.name,
+    state: t.state,
+    frames: t.frames,
+    topFrame: t.frames[0] ?? '',
+    keyFrame: computeKeyFrame(t.frames),
+    waitingOnMonitor: t.waitingOnMonitor,
+    waitingOnMonitorClass: t.waitingOnMonitorClass,
+    lockedMonitors: t.lockedMonitors,
+    nid: t.nid,
+    elapsed: t.elapsed,
+  };
 }
 
 function extractThreads(raw: string): RawThread[] {
@@ -43,6 +65,11 @@ function parseThreadBlock(block: string): RawThread | null {
   const lockedMonitors: string[] = [];
   let waitingOnMonitor: string | undefined;
   let waitingOnMonitorClass: string | undefined;
+
+  const nidMatch     = lines[0].match(/\bnid=(0x[0-9a-f]+|\d+)/i);
+  const elapsedMatch = lines[0].match(/\belapsed=(\d+(?:\.\d+)?)/);
+  const nid     = nidMatch     ? nidMatch[1]              : undefined;
+  const elapsed = elapsedMatch ? parseFloat(elapsedMatch[1]) : undefined;
 
   for (const line of lines) {
     const stateMatch = line.match(/java\.lang\.Thread\.State:\s+(\w+)/);
@@ -76,7 +103,7 @@ function parseThreadBlock(block: string): RawThread | null {
     if (heldMatch) lockedMonitors.push(heldMatch[1]);
   }
 
-  return { name, state, frames, waitingOnMonitor, waitingOnMonitorClass, lockedMonitors };
+  return { name, state, frames, waitingOnMonitor, waitingOnMonitorClass, lockedMonitors, nid, elapsed };
 }
 
 function normalizeState(raw: string): ThreadState {

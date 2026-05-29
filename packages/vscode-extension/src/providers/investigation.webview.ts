@@ -138,8 +138,9 @@ export class InvestigationWebview {
           canSelectMany: true,
           openLabel: 'Add to Investigation',
           filters: {
-            'All Supported': ['txt','log','tdump','jfr','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml'],
+            'All Supported': ['txt','log','tdump','jfr','har','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml'],
             'Thread Dumps & Logs': ['txt','log','tdump','jfr'],
+            'HAR Files': ['har'],
             'Images': ['png','jpg','jpeg','gif','webp'],
             'Documents': ['pdf','pptx','ppt','xlsx','xls','docx','doc'],
             'Archives': ['zip','tar','gz','7z'],

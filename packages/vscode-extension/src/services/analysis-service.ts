@@ -17,6 +17,10 @@ export type EvidenceType = EvidenceItem['type'];
 export function detectEvidenceType(name: string, content: string): EvidenceType {
   const lower = name.toLowerCase();
 
+  if (lower.endsWith('.har')) {
+    return 'generic';
+  }
+
   if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.gif')) {
     return 'screenshot';
   }

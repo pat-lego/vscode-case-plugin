@@ -1,4 +1,5 @@
 import { ThreadDumpSignals, ThreadState, StackFingerprint } from '../../types/signal';
+import { Thread } from '../../types/thread';
 
 const GC_THREAD_PATTERN = /^(GC |MM |Finaliz|J9VMGCCompact|MemoryAlarm|GCWorker)/i;
 
@@ -18,6 +19,18 @@ interface RawThread {
   name: string;
   state: ThreadState;
   frames: string[];
+}
+
+export function parseIbmJ9Threads(raw: string): Thread[] {
+  return extractThreads(raw).map(t => ({
+    name: t.name,
+    state: t.state,
+    // IBM J9 uses slash notation (java/lang/Thread); normalize to dots for consistent querying.
+    frames: t.frames.map(f => f.replace(/\//g, '.')),
+    topFrame: (t.frames[0] ?? '').replace(/\//g, '.'),
+    keyFrame: computeKeyFrame(t.frames).replace(/\//g, '.'),
+    lockedMonitors: [],
+  }));
 }
 
 export function parseIbmJ9(raw: string, capturedAt: Date): ThreadDumpSignals {
