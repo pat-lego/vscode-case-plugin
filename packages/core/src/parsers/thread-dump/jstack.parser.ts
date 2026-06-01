@@ -8,6 +8,7 @@ interface RawThread {
   name: string;
   state: ThreadState;
   frames: string[];
+  monitorLines: string[];
   waitingOnMonitor?: string;
   waitingOnMonitorClass?: string;
   lockedMonitors: string[];
@@ -29,6 +30,7 @@ function rawToThread(t: RawThread): Thread {
     name: t.name,
     state: t.state,
     frames: t.frames,
+    monitorLines: t.monitorLines,
     topFrame: t.frames[0] ?? '',
     keyFrame: computeKeyFrame(t.frames),
     waitingOnMonitor: t.waitingOnMonitor,
@@ -70,6 +72,7 @@ function parseThreadBlock(block: string): RawThread | null {
   const elapsedMatch = lines[0].match(/\belapsed=(\d+(?:\.\d+)?)/);
   const nid     = nidMatch     ? nidMatch[1]              : undefined;
   const elapsed = elapsedMatch ? parseFloat(elapsedMatch[1]) : undefined;
+  const monitorLines: string[] = [];
 
   for (const line of lines) {
     const stateMatch = line.match(/java\.lang\.Thread\.State:\s+(\w+)/);
@@ -79,6 +82,11 @@ function parseThreadBlock(block: string): RawThread | null {
 
     if (line.startsWith('at ')) {
       frames.push(line.replace(/^at\s+/, ''));
+    }
+
+    // Collect raw monitor annotation lines for querying (- locked, - waiting to lock, - parking to wait for, - waiting on)
+    if (line.startsWith('- ')) {
+      monitorLines.push(line);
     }
 
     // Traditional synchronized-block contention: "- waiting to lock <0xABCD> (a ClassName)"
@@ -103,7 +111,7 @@ function parseThreadBlock(block: string): RawThread | null {
     if (heldMatch) lockedMonitors.push(heldMatch[1]);
   }
 
-  return { name, state, frames, waitingOnMonitor, waitingOnMonitorClass, lockedMonitors, nid, elapsed };
+  return { name, state, frames, monitorLines, waitingOnMonitor, waitingOnMonitorClass, lockedMonitors, nid, elapsed };
 }
 
 function normalizeState(raw: string): ThreadState {

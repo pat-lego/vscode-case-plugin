@@ -29,6 +29,7 @@ export function parseIbmJ9Threads(raw: string): Thread[] {
     frames: t.frames.map(f => f.replace(/\//g, '.')),
     topFrame: (t.frames[0] ?? '').replace(/\//g, '.'),
     keyFrame: computeKeyFrame(t.frames).replace(/\//g, '.'),
+    monitorLines: [],
     lockedMonitors: [],
   }));
 }

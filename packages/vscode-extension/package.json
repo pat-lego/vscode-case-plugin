@@ -114,11 +114,6 @@
           "command": "investigator.addToCase",
           "when": "resourceScheme == 'file'",
           "group": "7_modification@99"
-        },
-        {
-          "command": "investigator.queryThreadDumps",
-          "when": "resourceScheme == 'file'",
-          "group": "7_modification@100"
         }
       ],
       "view/item/context": [

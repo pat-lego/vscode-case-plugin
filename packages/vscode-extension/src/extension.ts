@@ -189,63 +189,89 @@ export function activate(context: vscode.ExtensionContext) {
       if (!sig) { vscode.window.showWarningMessage(`Signature "${item.sigId}" not found.`); return; }
       ManualSignatureBuilderPanel.show(context, sigService, sig);
     }),
-    vscode.commands.registerCommand('investigator.reviewEvidenceWithAI', async (caseId: string, evidenceId: string) => {
+    vscode.commands.registerCommand('investigator.reviewEvidenceWithAI', async (caseId: string, evidenceIds: string | string[]) => {
       const session = caseManager.getSession(caseId);
       if (!session) return;
-      const ev = session.meta.evidence.find(e => e.id === evidenceId);
-      if (!ev) return;
+
+      const ids = Array.isArray(evidenceIds) ? evidenceIds : [evidenceIds];
+      const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+      const evItems = ids.map(id => session.meta.evidence.find(e => e.id === id)).filter(Boolean) as typeof session.meta.evidence;
+      if (!evItems.length) return;
+
+      const label = evItems.length === 1
+        ? (evItems[0].filePath ? path.basename(evItems[0].filePath) : evItems[0].source)
+        : `${evItems.length} evidence items`;
 
       const userPrompt = await vscode.window.showInputBox({
-        prompt: `What do you want to ask about "${ev.filePath ? path.basename(ev.filePath) : ev.source}"?`,
+        prompt: `What do you want to ask about "${label}"?`,
         placeHolder: 'e.g. Look for deadlocks, explain the high-CPU threads, summarize key errors...',
         ignoreFocusOut: true,
       });
-      if (userPrompt === undefined) return; // Escape pressed
+      if (userPrompt === undefined) return;
 
       const cliCmd = await pickAiCli();
       if (!cliCmd) return;
 
-      // Resolve content: prefer in-memory rawContent, fall back to reading the file
-      let content: string;
-      const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp']);
-      const fileExt = path.extname(ev.filePath ?? '').toLowerCase();
-      if (IMAGE_EXTS.has(fileExt)) {
-        content = `[Binary image file — cannot include inline content]`;
-      } else if (ev.rawContent) {
-        content = ev.rawContent;
-      } else if (ev.filePath) {
-        content = ev.filePath;
-      } else {
-        vscode.window.showWarningMessage('This evidence item has no readable content.'); return;
+      const sections: string[] = [];
+      for (const ev of evItems) {
+        const evName = ev.filePath ? path.basename(ev.filePath) : ev.source;
+        const fileExt = path.extname(ev.filePath ?? '').toLowerCase();
+        let content: string;
+        if (IMAGE_EXTS.has(fileExt)) {
+          content = `[Binary image file — cannot include inline content]`;
+        } else if (ev.rawContent) {
+          content = ev.rawContent;
+        } else if (ev.filePath) {
+          content = ev.filePath;
+        } else {
+          content = `[No readable content]`;
+        }
+        sections.push([
+          `# Evidence: ${evName}`,
+          `**Type:** ${ev.type}  **Case:** ${session.meta.id} -- ${session.meta.title}`,
+          `**Captured:** ${ev.capturedAt.toISOString().slice(0, 19).replace('T', ' ')}`,
+          '',
+          '## Content',
+          '',
+          content,
+        ].join('\n'));
       }
 
-      const evName = ev.filePath ? path.basename(ev.filePath) : ev.source;
-      const header = [
-        userPrompt || 'Please review the following evidence and provide your analysis.',
-        '',
-        '---',
-        '',
-        `# Evidence: ${evName}`,
-        `**Type:** ${ev.type}  **Case:** ${session.meta.id} -- ${session.meta.title}`,
-        `**Captured:** ${ev.capturedAt.toISOString().slice(0, 19).replace('T', ' ')}`,
-        '',
-        '## Content',
-        '',
-      ].join('\n');
+      const intro = userPrompt || 'Please review the following evidence and provide your analysis.';
+      const body = `${intro}\n\n---\n\n${sections.join('\n\n---\n\n')}`;
+      const tmpFile = path.join(os.tmpdir(), `ii-ev-${ids[0].slice(0, 12)}.md`);
+      require('fs').writeFileSync(tmpFile, body, 'utf-8');
 
-      const tmpFile = path.join(os.tmpdir(), `ii-ev-${evidenceId.slice(0, 12)}.md`);
-      require('fs').writeFileSync(tmpFile, header + content, 'utf-8');
-
-      const terminal = vscode.window.createTerminal(`AI Review -- ${evName}`);
+      const terminal = vscode.window.createTerminal(`AI Review -- ${label}`);
       terminal.show();
       terminal.sendText(`${cliCmd} < "${tmpFile}"`);
     }),
-    vscode.commands.registerCommand('investigator.queryThreadDumps', (uri?: vscode.Uri, allUris?: vscode.Uri[]) => {
-      const uris = allUris?.length ? allUris : uri ? [uri] : [];
+    vscode.commands.registerCommand('investigator.queryThreadDumps', async (uri?: vscode.Uri, allUris?: vscode.Uri[]) => {
+      let uris: vscode.Uri[] = allUris?.length ? allUris : uri ? [uri] : [];
+
       if (!uris.length) {
-        vscode.window.showWarningMessage('Incident Investigator: select one or more thread dump files first.');
-        return;
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Scanning workspace for thread dumps…' },
+          async () => {
+            const [jstackFiles, dumpFiles] = await Promise.all([
+              vscode.workspace.findFiles('**/*jstack*', '**/node_modules/**'),
+              vscode.workspace.findFiles('**/*.dump', '**/node_modules/**'),
+            ]);
+            const seen = new Set<string>();
+            const found: vscode.Uri[] = [];
+            for (const f of [...jstackFiles, ...dumpFiles]) {
+              if (!seen.has(f.fsPath)) { seen.add(f.fsPath); found.push(f); }
+            }
+            uris = found;
+          }
+        );
+
+        if (!uris.length) {
+          vscode.window.showWarningMessage('Incident Investigator: no thread dump files found in workspace (files named *jstack* or *.dump).');
+          return;
+        }
       }
+
       ThreadQueryPanel.show(context, uris);
     }),
     vscode.commands.registerCommand('investigator.addToCase', async (uri?: vscode.Uri, allUris?: vscode.Uri[]) => {

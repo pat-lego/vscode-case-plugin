@@ -372,9 +372,11 @@ export class InvestigationWebview {
         vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
         break;
 
-      case 'reviewEvidenceWithAI':
-        vscode.commands.executeCommand('investigator.reviewEvidenceWithAI', caseId, String(msg.id ?? ''));
+      case 'reviewEvidenceWithAI': {
+        const ids: string[] = Array.isArray(msg.ids) ? msg.ids : [String(msg.id ?? '')];
+        vscode.commands.executeCommand('investigator.reviewEvidenceWithAI', caseId, ids);
         break;
+      }
 
       case 'renameEvidence': {
         const session = this.caseManager.getSession(caseId);
@@ -2035,44 +2037,70 @@ function openInEditor(e, id) {
 }
 
 // -- Context menu --------------------------------------------------------------
-var ctxEvId = null;
+var ctxEvIds = [];
 var ctxMenu = document.getElementById('ctx-menu');
+var CTX_SINGLE_ONLY = ['ctx-open', 'ctx-rename', 'ctx-copy-ref', 'ctx-delete'];
 
-document.addEventListener('contextmenu', function(e) {
-  var evItem = e.target.closest('.ev-item');
-  if (!evItem) { hideCtxMenu(); return; }
-  e.preventDefault();
-  ctxEvId = evItem.dataset.evId;
-  // Keep menu inside viewport
+function showCtxMenu(e, ids) {
+  ctxEvIds = ids;
+  var isMulti = ids.length > 1;
+  CTX_SINGLE_ONLY.forEach(function(id) {
+    var el = document.getElementById(id);
+    el.style.opacity = isMulti ? '0.35' : '';
+    el.style.pointerEvents = isMulti ? 'none' : '';
+  });
   var menuW = 180, menuH = 140;
   var x = Math.min(e.clientX, window.innerWidth - menuW - 4);
   var y = Math.min(e.clientY, window.innerHeight - menuH - 4);
   ctxMenu.style.left = x + 'px';
   ctxMenu.style.top = y + 'px';
   ctxMenu.style.display = 'block';
+}
+
+document.addEventListener('contextmenu', function(e) {
+  var grpHdr = e.target.closest('.ev-group-hdr');
+  var evItem = e.target.closest('.ev-item');
+
+  if (grpHdr) {
+    e.preventDefault();
+    var body = grpHdr.closest('.ev-group').querySelector('.ev-group-body');
+    var ids = body ? Array.from(body.querySelectorAll('.ev-item[data-ev-id]')).map(function(el) { return el.dataset.evId; }) : [];
+    if (!ids.length) return;
+    showCtxMenu(e, ids);
+  } else if (evItem) {
+    e.preventDefault();
+    var clickedId = evItem.dataset.evId;
+    // If the clicked item is part of the current multi-selection, use all selected
+    var ids = selectedEvIds.size > 0 && selectedEvIds.has(clickedId)
+      ? Array.from(selectedEvIds)
+      : [clickedId];
+    showCtxMenu(e, ids);
+  } else {
+    hideCtxMenu();
+  }
 });
 
 document.addEventListener('click', function() { hideCtxMenu(); });
 document.addEventListener('keydown', function(e) { if (e.key === 'Escape') hideCtxMenu(); });
 
-function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxEvId = null; }
+function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxEvIds = []; }
 
 document.getElementById('ctx-open').addEventListener('click', function(e) {
   e.stopPropagation();
-  if (ctxEvId) send('openEvidence', { id: ctxEvId });
+  if (ctxEvIds.length === 1) send('openEvidence', { id: ctxEvIds[0] });
   hideCtxMenu();
 });
 
 document.getElementById('ctx-rename').addEventListener('click', function(e) {
   e.stopPropagation();
-  if (ctxEvId) send('renameEvidence', { id: ctxEvId });
+  if (ctxEvIds.length === 1) send('renameEvidence', { id: ctxEvIds[0] });
   hideCtxMenu();
 });
 
 document.getElementById('ctx-copy-ref').addEventListener('click', function(e) {
   e.stopPropagation();
-  if (ctxEvId) {
-    var it = items.find(function(i) { return i.id === ctxEvId; });
+  if (ctxEvIds.length === 1) {
+    var it = items.find(function(i) { return i.id === ctxEvIds[0]; });
     if (it) {
       var ref = buildEvidenceRef(it);
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2087,13 +2115,13 @@ document.getElementById('ctx-copy-ref').addEventListener('click', function(e) {
 
 document.getElementById('ctx-ai-review').addEventListener('click', function(e) {
   e.stopPropagation();
-  if (ctxEvId) send('reviewEvidenceWithAI', { id: ctxEvId });
+  if (ctxEvIds.length > 0) send('reviewEvidenceWithAI', { ids: ctxEvIds });
   hideCtxMenu();
 });
 
 document.getElementById('ctx-delete').addEventListener('click', function(e) {
   e.stopPropagation();
-  if (ctxEvId) send('deleteEvidence', { id: ctxEvId });
+  if (ctxEvIds.length === 1) send('deleteEvidence', { id: ctxEvIds[0] });
   hideCtxMenu();
 });
 

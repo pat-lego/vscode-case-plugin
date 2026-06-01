@@ -148,7 +148,7 @@ function parsePredicate(expr: string): FilterFn {
       // frame is an array field: frame!=*pattern* means "no frame matches"
       if (field === 'frame') {
         const re = globToRegex(rawVal);
-        return (t) => !t.frames.some(f => re.test(f));
+        return (t) => ![...t.frames, ...t.monitorLines].some(f => re.test(f));
       }
       // glob inequality on scalar fields: thread!=*b2c* etc.
       if (rawVal.includes('*') || rawVal.includes('?')) {
@@ -170,7 +170,7 @@ function parsePredicate(expr: string): FilterFn {
 
     if (field === 'frame') {
       const re = globToRegex(pattern);
-      return (t) => t.frames.some(f => re.test(f));
+      return (t) => [...t.frames, ...t.monitorLines].some(f => re.test(f));
     }
 
     if (pattern.includes('*') || pattern.includes('?')) {

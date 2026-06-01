@@ -4,6 +4,8 @@ export interface Thread {
   name: string;
   state: ThreadState;
   frames: string[];
+  /** Raw monitor annotation lines from the dump (e.g. "- locked <0x…>", "- waiting to lock <0x…>"). */
+  monitorLines: string[];
   topFrame: string;
   keyFrame: string;
   waitingOnMonitor?: string;

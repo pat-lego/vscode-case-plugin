@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseThreadDumpThreads, executeQuery, Thread } from '@incident-investigator/core';
 
-interface SourceFile { name: string; threadCount: number; error?: string }
+interface SourceFile { name: string; fsPath: string; threadCount: number; error?: string }
 
 export class ThreadQueryPanel {
   static show(context: vscode.ExtensionContext, uris: vscode.Uri[]) {
@@ -14,47 +14,99 @@ export class ThreadQueryPanel {
       { enableScripts: true, retainContextWhenHidden: true }
     );
 
-    // Load threads from all selected files
-    const allThreads: Thread[] = [];
-    const sources: SourceFile[] = [];
+    let allThreads: Thread[] = [];
+    let sources: SourceFile[] = [];
+    let threadSource = new WeakMap<Thread, string>();
+    let lastQuery: string | null = null;
+    let pendingRescan: ReturnType<typeof setTimeout> | undefined;
 
-    for (const uri of uris) {
-      const name = path.basename(uri.fsPath);
-      try {
-        const raw = fs.readFileSync(uri.fsPath, 'utf-8');
-        const threads = parseThreadDumpThreads(raw);
-        allThreads.push(...threads);
-        sources.push({ name, threadCount: threads.length });
-      } catch (e) {
-        sources.push({ name, threadCount: 0, error: String(e) });
+    const loadFromUris = (fileUris: vscode.Uri[]) => {
+      allThreads = [];
+      sources = [];
+      threadSource = new WeakMap<Thread, string>();
+      for (const uri of fileUris) {
+        const name = path.basename(uri.fsPath);
+        try {
+          const raw = fs.readFileSync(uri.fsPath, 'utf-8');
+          const threads = parseThreadDumpThreads(raw);
+          for (const t of threads) threadSource.set(t, uri.fsPath);
+          allThreads.push(...threads);
+          sources.push({ name, fsPath: uri.fsPath, threadCount: threads.length });
+        } catch (e) {
+          sources.push({ name, fsPath: uri.fsPath, threadCount: 0, error: String(e) });
+        }
       }
+    };
+
+    const sendQueryResult = (query: string) => {
+      const result = executeQuery(allThreads, query);
+      panel.webview.postMessage({
+        type: 'queryResult',
+        query,
+        rows: result.rows,
+        totalMatched: result.totalMatched,
+        error: result.error,
+        frames: result.threads?.map(t => t.frames),
+        monitorLines: result.threads?.map(t => t.monitorLines),
+        threadSources: result.threads?.map(t => threadSource.get(t) ?? ''),
+      });
+    };
+
+    const scheduleRescan = () => {
+      if (pendingRescan) { clearTimeout(pendingRescan); }
+      pendingRescan = setTimeout(async () => {
+        const [jstackFiles, dumpFiles] = await Promise.all([
+          vscode.workspace.findFiles('**/*jstack*', '**/node_modules/**'),
+          vscode.workspace.findFiles('**/*.dump', '**/node_modules/**'),
+        ]);
+        const seen = new Set<string>();
+        const found: vscode.Uri[] = [];
+        for (const f of [...jstackFiles, ...dumpFiles]) {
+          if (!seen.has(f.fsPath)) { seen.add(f.fsPath); found.push(f); }
+        }
+        loadFromUris(found);
+        panel.webview.postMessage({ type: 'init', sources, totalThreads: allThreads.length });
+        if (lastQuery !== null) { sendQueryResult(lastQuery!); }
+      }, 500);
+    };
+
+    // Initial load from the uris passed in (already scanned by the command)
+    loadFromUris(uris);
+
+    // Watch for workspace changes to any matching file
+    const panelDisposables: vscode.Disposable[] = [];
+    for (const pattern of ['**/*jstack*', '**/*.dump']) {
+      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+      panelDisposables.push(
+        watcher,
+        watcher.onDidCreate(() => scheduleRescan()),
+        watcher.onDidDelete(() => scheduleRescan()),
+        watcher.onDidChange(() => scheduleRescan()),
+      );
     }
 
     panel.webview.html = buildHtml(context, panel.webview);
 
-    // Send initial state once the webview is ready
-    panel.webview.onDidReceiveMessage(msg => {
+    panel.webview.onDidReceiveMessage(async msg => {
       if (msg.type === 'ready') {
-        panel.webview.postMessage({
-          type: 'init',
-          sources,
-          totalThreads: allThreads.length,
-        });
+        panel.webview.postMessage({ type: 'init', sources, totalThreads: allThreads.length });
+      }
+
+      if (msg.type === 'openFile') {
+        const doc = await vscode.workspace.openTextDocument(msg.fsPath);
+        await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
       }
 
       if (msg.type === 'runQuery') {
-        const query: string = msg.query ?? '';
-        const result = executeQuery(allThreads, query);
-        panel.webview.postMessage({
-          type: 'queryResult',
-          query,
-          rows: result.rows,
-          totalMatched: result.totalMatched,
-          error: result.error,
-          // frames[i] corresponds to rows[i] for non-stats (raw thread list) queries
-          frames: result.threads?.map(t => t.frames),
-        });
+        const q: string = msg.query ?? '';
+        lastQuery = q;
+        sendQueryResult(q);
       }
+    }, undefined, context.subscriptions);
+
+    panel.onDidDispose(() => {
+      panelDisposables.forEach(d => d.dispose());
+      if (pendingRescan) { clearTimeout(pendingRescan); }
     }, undefined, context.subscriptions);
   }
 }
@@ -90,14 +142,37 @@ function buildHtml(_context: vscode.ExtensionContext, _webview: vscode.Webview):
   body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 13px; padding: 16px; }
 
   /* Sources strip */
-  #sources { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  #sources {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px;
+    max-height: 70px; overflow-y: auto; padding-bottom: 2px;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  #sources::-webkit-scrollbar { width: 6px; }
+  #sources::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .source-tag {
     display: inline-flex; align-items: center; gap: 5px;
     background: var(--tag-bg); color: var(--tag-fg);
     border-radius: 10px; padding: 2px 9px; font-size: 11px;
+    cursor: context-menu;
   }
   .source-tag.error { background: var(--error-fg); color: #fff; }
   .source-count { opacity: 0.75; }
+
+  /* Context menu */
+  #ctx-menu {
+    position: fixed; z-index: 9999;
+    background: var(--vscode-menu-background, #252526);
+    color: var(--vscode-menu-foreground, #ccc);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 0; min-width: 180px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    display: none; user-select: none;
+  }
+  #ctx-menu.open { display: block; }
+  .ctx-item {
+    padding: 5px 14px; font-size: 12px; cursor: pointer;
+  }
+  .ctx-item:hover { background: var(--vscode-menu-selectionBackground, #094771); color: var(--vscode-menu-selectionForeground, #fff); }
 
   /* Query bar */
   #query-bar { display: flex; gap: 8px; margin-bottom: 10px; }
@@ -205,6 +280,7 @@ function buildHtml(_context: vscode.ExtensionContext, _webview: vscode.Webview):
     line-height: 1.7; white-space: pre;
   }
   .stack-frame.app { color: var(--fg); }
+  .stack-frame.monitor-line { color: #cca700; opacity: 0.85; }
 
   #no-results { color: var(--muted); padding: 16px 0; font-style: italic; }
 </style>
@@ -212,6 +288,7 @@ function buildHtml(_context: vscode.ExtensionContext, _webview: vscode.Webview):
 <body>
 
 <div id="sources"></div>
+<div id="ctx-menu"><div class="ctx-item" id="ctx-open">Open file in workspace</div></div>
 
 <div id="query-bar">
   <div id="query-wrap">
@@ -248,10 +325,12 @@ function buildHtml(_context: vscode.ExtensionContext, _webview: vscode.Webview):
 
 <script>
 const vscode = acquireVsCodeApi();
-let lastRows   = [];
-let lastFrames = null;   // string[][] | null -- parallel to lastRows, only for non-stats
-let sortCol    = null;
-let sortDir    = 1; // 1 = desc, -1 = asc
+let lastRows          = [];
+let lastFrames        = null;   // string[][] | null -- parallel to lastRows, only for non-stats
+let lastMonitorLines  = null;   // string[][] | null -- monitor annotation lines per row
+let lastThreadSources = null;   // string[] | null  -- fsPath per row, only for non-stats
+let sortCol         = null;
+let sortDir         = 1; // 1 = desc, -1 = asc
 
 const qInput     = document.getElementById('query-input');
 const qHighlight = document.getElementById('query-highlight');
@@ -311,7 +390,7 @@ window.addEventListener('message', e => {
   const msg = e.data;
 
   if (msg.type === 'init') {
-    renderSources(msg.sources, msg.totalThreads);
+    renderSources(msg.sources);
     document.getElementById('summary').innerHTML =
       'Loaded <span class="highlight">' + msg.totalThreads + '</span> threads across <span class="highlight">' + msg.sources.filter(s => !s.error).length + '</span> file(s). Enter a query above.';
   }
@@ -326,26 +405,57 @@ window.addEventListener('message', e => {
       return;
     }
     errEl.style.display = 'none';
-    lastRows   = msg.rows;
-    lastFrames = msg.frames ?? null;
-    sortCol    = null;
-    renderResults(msg.rows, msg.totalMatched, lastFrames);
+    lastRows          = msg.rows;
+    lastFrames        = msg.frames ?? null;
+    lastMonitorLines  = msg.monitorLines ?? null;
+    lastThreadSources = msg.threadSources ?? null;
+    sortCol           = null;
+    renderResults(msg.rows, msg.totalMatched, lastFrames, lastMonitorLines, lastThreadSources);
   }
 });
 
-function renderSources(sources, total) {
+const ctxMenu  = document.getElementById('ctx-menu');
+const ctxOpen  = document.getElementById('ctx-open');
+let ctxFsPath  = '';
+
+function showCtxMenu(x, y, fsPath) {
+  ctxFsPath = fsPath;
+  ctxMenu.style.left = x + 'px';
+  ctxMenu.style.top  = y + 'px';
+  ctxMenu.classList.add('open');
+}
+function hideCtxMenu() { ctxMenu.classList.remove('open'); }
+
+ctxOpen.addEventListener('click', () => {
+  if (ctxFsPath) vscode.postMessage({ type: 'openFile', fsPath: ctxFsPath });
+  hideCtxMenu();
+});
+document.addEventListener('click',       hideCtxMenu);
+document.addEventListener('contextmenu', hideCtxMenu);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(); });
+
+function renderSources(sources) {
   const el = document.getElementById('sources');
   el.innerHTML = sources.map(s => {
-    if (s.error) return '<span class="source-tag error" title="' + escHtml(s.error) + '">' + escHtml(s.name) + ' &#x26A0;</span>';
-    return '<span class="source-tag">' + escHtml(s.name) + ' <span class="source-count">(' + s.threadCount + ')</span></span>';
+    const fsAttr = escAttr(s.fsPath ?? '');
+    if (s.error) return '<span class="source-tag error" title="' + escHtml(s.error) + '" data-fspath="' + fsAttr + '">' + escHtml(s.name) + ' &#x26A0;</span>';
+    return '<span class="source-tag" data-fspath="' + fsAttr + '">' + escHtml(s.name) + ' <span class="source-count">(' + s.threadCount + ')</span></span>';
   }).join('');
+
+  el.querySelectorAll('.source-tag').forEach(tag => {
+    tag.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      showCtxMenu(e.clientX, e.clientY, tag.dataset.fspath);
+    });
+  });
 }
 
 // JVM frame prefixes -- dimmed in the stack view; app frames shown brighter
 const JVM_PREFIXES = ['jdk.','java.','sun.','com.sun.','javax.','[Ljava.'];
 function isAppFrame(f) { return !JVM_PREFIXES.some(p => f.startsWith(p)); }
 
-function renderResults(rows, totalMatched, frames) {
+function renderResults(rows, totalMatched, frames, monitorLines, threadSources) {
   const wrap    = document.getElementById('results-wrap');
   const noRes   = document.getElementById('no-results');
   const summary = document.getElementById('summary');
@@ -365,7 +475,7 @@ function renderResults(rows, totalMatched, frames) {
     renderStatsTable(wrap, rows, totalMatched);
   } else {
     summary.innerHTML = 'Matched <span class="highlight">' + totalMatched + '</span> threads.';
-    renderThreadCards(wrap, rows, frames);
+    renderThreadCards(wrap, rows, frames, monitorLines, threadSources);
   }
 }
 
@@ -407,12 +517,12 @@ function renderStatsTable(wrap, rows, totalMatched) {
         if (typeof av === 'number' && typeof bv === 'number') return (bv - av) * sortDir;
         return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir;
       });
-      renderResults(sorted, totalMatched, null);
+      renderResults(sorted, totalMatched, null, null, null);
     });
   });
 }
 
-function renderThreadCards(wrap, rows, frames) {
+function renderThreadCards(wrap, rows, frames, monitorLines, threadSources) {
   wrap.innerHTML = '';
   rows.forEach((row, i) => {
     const state    = String(row.state ?? '');
@@ -420,9 +530,19 @@ function renderThreadCards(wrap, rows, frames) {
     const depth    = row.stackdepth != null ? row.stackdepth + ' frames' : '';
     const elapsedVal = row.elapsed != null ? Math.round(Number(row.elapsed)) + 's' : '';
     const meta     = [depth, elapsedVal].filter(Boolean).join('  |  ');
+    const fsPath   = threadSources ? (threadSources[i] ?? '') : '';
 
     const card   = document.createElement('div');
     card.className = 'thread-card';
+    if (fsPath) {
+      card.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        showCtxMenu(e.clientX, e.clientY, fsPath);
+      });
+    }
+    const threadFrames   = frames && frames[i] ? frames[i] : [];
+    const threadMonitors = monitorLines && monitorLines[i] ? monitorLines[i] : [];
 
     const header = document.createElement('div');
     header.className = 'thread-header';
@@ -436,12 +556,17 @@ function renderThreadCards(wrap, rows, frames) {
     const stackEl = document.createElement('div');
     stackEl.className = 'thread-stack';
 
-    const threadFrames = frames && frames[i] ? frames[i] : [];
     if (threadFrames.length > 0) {
       threadFrames.forEach(f => {
         const line = document.createElement('div');
         line.className = 'stack-frame' + (isAppFrame(f) ? ' app' : '');
         line.textContent = f;
+        stackEl.appendChild(line);
+      });
+      threadMonitors.forEach(m => {
+        const line = document.createElement('div');
+        line.className = 'stack-frame monitor-line';
+        line.textContent = m;
         stackEl.appendChild(line);
       });
     } else {
