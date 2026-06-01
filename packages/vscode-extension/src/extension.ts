@@ -253,21 +253,13 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Scanning workspace for thread dumps…' },
           async () => {
-            const [jstackFiles, dumpFiles] = await Promise.all([
-              vscode.workspace.findFiles('**/*jstack*', '**/node_modules/**'),
-              vscode.workspace.findFiles('**/*.dump', '**/node_modules/**'),
-            ]);
-            const seen = new Set<string>();
-            const found: vscode.Uri[] = [];
-            for (const f of [...jstackFiles, ...dumpFiles]) {
-              if (!seen.has(f.fsPath)) { seen.add(f.fsPath); found.push(f); }
-            }
-            uris = found;
+            const dumpFiles = await vscode.workspace.findFiles('**/*.dump', '**/node_modules/**');
+            uris = dumpFiles;
           }
         );
 
         if (!uris.length) {
-          vscode.window.showWarningMessage('Incident Investigator: no thread dump files found in workspace (files named *jstack* or *.dump).');
+          vscode.window.showWarningMessage('Incident Investigator: no thread dump files found in workspace (*.dump).');
           return;
         }
       }

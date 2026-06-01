@@ -55,15 +55,7 @@ export class ThreadQueryPanel {
     const scheduleRescan = () => {
       if (pendingRescan) { clearTimeout(pendingRescan); }
       pendingRescan = setTimeout(async () => {
-        const [jstackFiles, dumpFiles] = await Promise.all([
-          vscode.workspace.findFiles('**/*jstack*', '**/node_modules/**'),
-          vscode.workspace.findFiles('**/*.dump', '**/node_modules/**'),
-        ]);
-        const seen = new Set<string>();
-        const found: vscode.Uri[] = [];
-        for (const f of [...jstackFiles, ...dumpFiles]) {
-          if (!seen.has(f.fsPath)) { seen.add(f.fsPath); found.push(f); }
-        }
+        const found = await vscode.workspace.findFiles('**/*.dump', '**/node_modules/**');
         loadFromUris(found);
         panel.webview.postMessage({ type: 'init', sources, totalThreads: allThreads.length });
         if (lastQuery !== null) { sendQueryResult(lastQuery!); }
@@ -75,15 +67,13 @@ export class ThreadQueryPanel {
 
     // Watch for workspace changes to any matching file
     const panelDisposables: vscode.Disposable[] = [];
-    for (const pattern of ['**/*jstack*', '**/*.dump']) {
-      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-      panelDisposables.push(
-        watcher,
-        watcher.onDidCreate(() => scheduleRescan()),
-        watcher.onDidDelete(() => scheduleRescan()),
-        watcher.onDidChange(() => scheduleRescan()),
-      );
-    }
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.dump');
+    panelDisposables.push(
+      watcher,
+      watcher.onDidCreate(() => scheduleRescan()),
+      watcher.onDidDelete(() => scheduleRescan()),
+      watcher.onDidChange(() => scheduleRescan()),
+    );
 
     panel.webview.html = buildHtml(context, panel.webview);
 
