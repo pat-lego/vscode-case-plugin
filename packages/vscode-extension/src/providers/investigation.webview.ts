@@ -238,6 +238,7 @@ export class InvestigationWebview {
                   filePath,
                 };
                 this.caseManager.addEvidence(caseId, item);
+                this.knownEvidenceIds.get(caseId)?.add(item.id);
                 newEvidence.push({ id: item.id, name: fileName, type: 'generic', timestamp: item.capturedAt.toISOString() });
               }
             } catch { /* best-effort */ }

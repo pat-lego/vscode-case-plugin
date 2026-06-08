@@ -12,6 +12,7 @@ const THREADS: Thread[] = [
     ],
     topFrame: 'com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)',
     keyFrame: 'com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)',
+    monitorLines: [],
     lockedMonitors: [],
   },
   {
@@ -23,6 +24,7 @@ const THREADS: Thread[] = [
     ],
     topFrame: 'com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)',
     keyFrame: 'com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:213)',
+    monitorLines: [],
     lockedMonitors: [],
   },
   {
@@ -34,6 +36,7 @@ const THREADS: Thread[] = [
     ],
     topFrame: 'java.lang.Object.wait(Native Method)',
     keyFrame: 'com.example.queue.TaskQueue.poll(TaskQueue.java:88)',
+    monitorLines: [],
     lockedMonitors: [],
   },
   {
@@ -45,6 +48,7 @@ const THREADS: Thread[] = [
     ],
     topFrame: 'java.lang.Thread.sleep(Native Method)',
     keyFrame: 'com.example.scheduler.JobRunner.run(JobRunner.java:55)',
+    monitorLines: [],
     lockedMonitors: [],
   },
   {
@@ -53,6 +57,7 @@ const THREADS: Thread[] = [
     frames: ['com.example.Main.main(Main.java:10)'],
     topFrame: 'com.example.Main.main(Main.java:10)',
     keyFrame: 'com.example.Main.main(Main.java:10)',
+    monitorLines: [],
     lockedMonitors: [],
   },
 ];
@@ -208,6 +213,7 @@ describe('executeQuery — field extraction', () => {
       frames: ['com.example.service.MyService.doWork(MyService.java:100)'],
       topFrame: 'com.example.service.MyService.doWork(MyService.java:100)',
       keyFrame: 'com.example.service.MyService.doWork(MyService.java:100)',
+      monitorLines: [],
       lockedMonitors: [],
     };
     const r = executeQuery([t], '| stats count by class');
@@ -220,6 +226,7 @@ describe('executeQuery — field extraction', () => {
       frames: ['com.example.service.MyService.doWork(MyService.java:100)'],
       topFrame: 'com.example.service.MyService.doWork(MyService.java:100)',
       keyFrame: 'com.example.service.MyService.doWork(MyService.java:100)',
+      monitorLines: [],
       lockedMonitors: [],
     };
     const r = executeQuery([t], '| stats count by package');
@@ -230,10 +237,41 @@ describe('executeQuery — field extraction', () => {
     const t: Thread = {
       name: 'empty-thread', state: 'RUNNABLE',
       frames: [], topFrame: '', keyFrame: '',
+      monitorLines: [],
       lockedMonitors: [],
     };
     const r = executeQuery([t], '| stats count by state');
     expect(r.rows).toHaveLength(1);
     expect(r.rows[0].state).toBe('RUNNABLE');
+  });
+});
+
+describe('executeQuery — OR in where clause', () => {
+  const mkThread = (name: string, state: Thread['state']): Thread => ({
+    name, state, frames: [], topFrame: '', keyFrame: '', monitorLines: [], lockedMonitors: [],
+  });
+
+  it('OR in where includes threads matching either branch', () => {
+    const threads = [
+      mkThread('qtp12345-worker', 'BLOCKED'),
+      mkThread('servlet-/graphql/execute.json', 'TIMED_WAITING'),
+      mkThread('background-worker', 'BLOCKED'),
+    ];
+    const r1 = executeQuery(threads, 'state=BLOCKED OR state=TIMED_WAITING | where thread=*/graphql/execute.json*');
+    expect(r1.totalMatched).toBe(1);
+
+    const r2 = executeQuery(threads, 'state=BLOCKED OR state=TIMED_WAITING | where thread=*qtp* OR thread=*/graphql/execute.json*');
+    expect(r2.totalMatched).toBe(2);
+  });
+
+  it('OR in where does not drop threads that only match the second branch', () => {
+    const threads = [
+      mkThread('qtp12345-worker', 'BLOCKED'),
+      mkThread('sling-/graphql/execute.json-handler', 'TIMED_WAITING'),
+    ];
+    const r = executeQuery(threads, 'state=BLOCKED OR state=TIMED_WAITING | where thread=*qtp* OR thread=*/graphql/execute.json*');
+    expect(r.totalMatched).toBe(2);
+    const names = r.rows.map(row => row.thread);
+    expect(names).toContain('sling-/graphql/execute.json-handler');
   });
 });

@@ -49,7 +49,7 @@ function t(
   const kf = keyFrame ??
     frames.find(f => !f.startsWith('jdk.') && !f.startsWith('java.') && !f.startsWith('sun.')) ??
     frames[0] ?? '';
-  return { name, state, frames, topFrame: frames[0] ?? '', keyFrame: kf, lockedMonitors: [] };
+  return { name, state, frames, topFrame: frames[0] ?? '', keyFrame: kf, monitorLines: [], lockedMonitors: [] };
 }
 
 function b2c(ip: string, path: string, state: Thread['state'], frames: string[], keyFrame?: string): Thread {
