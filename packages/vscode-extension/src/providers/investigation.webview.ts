@@ -410,6 +410,12 @@ export class InvestigationWebview {
           newFilePath = path.join(caseDir, trimmed);
           try {
             fs.mkdirSync(caseDir, { recursive: true });
+            // Delete the old stored copy in the case dir (written by writeToDisk when evidence was first added)
+            const oldStoredName = ev.filePath ? path.basename(ev.filePath) : `${ev.id}.txt`;
+            const oldStored = path.join(caseDir, oldStoredName);
+            if (oldStored !== newFilePath && fs.existsSync(oldStored)) {
+              try { fs.unlinkSync(oldStored); } catch { /* best-effort */ }
+            }
             fs.writeFileSync(newFilePath, ev.rawContent, 'utf-8');
           } catch (err) { vscode.window.showErrorMessage(`Failed to write renamed file: ${err}`); break; }
         } else if (ev.filePath && fs.existsSync(ev.filePath)) {
@@ -417,6 +423,7 @@ export class InvestigationWebview {
           try {
             fs.mkdirSync(caseDir, { recursive: true });
             fs.copyFileSync(ev.filePath, newFilePath);
+            fs.unlinkSync(ev.filePath);
           } catch (err) { vscode.window.showErrorMessage(`Failed to copy for rename: ${err}`); break; }
         } else {
           vscode.window.showErrorMessage('Cannot rename: file not found on disk.');
