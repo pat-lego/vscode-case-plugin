@@ -138,8 +138,9 @@ export class InvestigationWebview {
           canSelectMany: true,
           openLabel: 'Add to Investigation',
           filters: {
-            'All Supported': ['txt','log','tdump','jfr','har','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml'],
+            'All Supported': ['txt','log','tdump','jfr','har','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml','config'],
             'Thread Dumps & Logs': ['txt','log','tdump','jfr'],
+            'Config Files': ['config'],
             'HAR Files': ['har'],
             'Images': ['png','jpg','jpeg','gif','webp'],
             'Documents': ['pdf','pptx','ppt','xlsx','xls','docx','doc'],
@@ -522,7 +523,7 @@ export class InvestigationWebview {
   }
 
   private addFileEvidence(caseId: string, filePath: string, caseDir: string | undefined, group?: string): { item: { id: string; name: string; type: string; timestamp: string; group?: string }; findings?: unknown[] } | null {
-    const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml']);
+    const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml','.config']);
     const ext = path.extname(filePath).toLowerCase();
     const name = path.basename(filePath);
 
@@ -582,7 +583,7 @@ export class InvestigationWebview {
             try { fs.mkdirSync(path.dirname(destPath), { recursive: true }); fs.copyFileSync(srcPath, destPath); } catch { destPath = srcPath; }
           }
           const displayName = relPath; // preserve structure in the name
-          const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml']);
+          const TEXT_EXTS = new Set(['.txt','.log','.tdump','.jfr','.md','.json','.xml','.csv','.yaml','.yml','.config']);
           const ext = path.extname(entry.name).toLowerCase();
           if (TEXT_EXTS.has(ext)) {
             try {

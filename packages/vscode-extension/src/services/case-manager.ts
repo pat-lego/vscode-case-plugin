@@ -166,9 +166,14 @@ export class CaseManager {
         }
       } else {
         // Extension-managed evidence — delete the stored content file.
-        const storedFile = path.join(caseDir, `${ev.id}.txt`);
+        // Try original filename (new format) then ev-id.txt (old format).
+        const storedName = (ev.filePath ? path.basename(ev.filePath) : '') || `${ev.id}.txt`;
+        const storedFile = path.join(caseDir, storedName);
+        const legacyFile = path.join(caseDir, `${ev.id}.txt`);
         if (fs.existsSync(storedFile)) {
           try { fs.unlinkSync(storedFile); } catch { /* best-effort */ }
+        } else if (fs.existsSync(legacyFile)) {
+          try { fs.unlinkSync(legacyFile); } catch { /* best-effort */ }
         }
         // Delete the original file too if it was copied into the case directory.
         const normalCaseDir = caseDir.endsWith(path.sep) ? caseDir : caseDir + path.sep;
@@ -287,10 +292,14 @@ export class CaseManager {
     if (!session || !session.casePath) return;
     const caseDir = path.join(session.casePath, caseId);
     if (!fs.existsSync(caseDir)) return;
-    // Skip stored content files that the extension itself wrote (ev-*.txt)
+    // Skip stored content files that the extension itself wrote
     const storedFilePaths = new Set<string>();
     for (const ev of session.meta.evidence) {
       if (!ev.id.startsWith('disk-')) {
+        // new format: original filename; old format fallback: ev-id.txt
+        const originalName = ev.filePath ? path.basename(ev.filePath) : '';
+        const storedName = originalName || `${ev.id}.txt`;
+        storedFilePaths.add(path.join(caseDir, storedName));
         storedFilePaths.add(path.join(caseDir, `${ev.id}.txt`));
       }
     }
@@ -512,7 +521,8 @@ export class CaseManager {
       .map(ev => {
         let storedFile: string | null = null;
         if (ev.rawContent && ev.type !== 'screenshot') {
-          storedFile = `${ev.id}.txt`;
+          const originalName = ev.filePath ? path.basename(ev.filePath) : '';
+          storedFile = originalName || `${ev.id}.txt`;
           fs.writeFileSync(path.join(caseDir, storedFile), ev.rawContent, 'utf-8');
         }
         return {
