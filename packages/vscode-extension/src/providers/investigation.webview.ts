@@ -138,7 +138,7 @@ export class InvestigationWebview {
           canSelectMany: true,
           openLabel: 'Add to Investigation',
           filters: {
-            'All Supported': ['txt','log','tdump','jfr','har','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml','config'],
+            'All Supported': ['txt','log','tdump','jfr','har','png','jpg','jpeg','gif','webp','pdf','pptx','ppt','xlsx','xls','docx','doc','zip','tar','gz','7z','json','xml','csv','md','yaml','yml','config','mp4','mov','avi','webm','mkv','m4v'],
             'Thread Dumps & Logs': ['txt','log','tdump','jfr'],
             'Config Files': ['config'],
             'HAR Files': ['har'],
@@ -307,7 +307,7 @@ export class InvestigationWebview {
             } catch { content = null; }
           }
         } else {
-          const BINARY_EXTS = new Set(['.pdf','.pptx','.ppt','.xlsx','.xls','.docx','.doc','.zip','.tar','.gz','.7z']);
+          const BINARY_EXTS = new Set(['.pdf','.pptx','.ppt','.xlsx','.xls','.docx','.doc','.zip','.tar','.gz','.7z','.mp4','.mov','.avi','.webm','.mkv','.m4v','.flv','.wmv','.mpeg','.mpg']);
           const fileExt = path.extname(ev.filePath ?? '').toLowerCase();
           if (BINARY_EXTS.has(fileExt)) {
             content = `${fileExt.slice(1).toUpperCase()} file — click "Open ↗" to view in your default application.`;
@@ -485,6 +485,7 @@ export class InvestigationWebview {
           '.pdf','.pptx','.ppt','.xlsx','.xls','.docx','.doc',
           '.png','.jpg','.jpeg','.gif','.webp','.svg','.bmp','.ico',
           '.exe','.dmg','.pkg','.jar','.class','.pyc','.so','.dylib','.dll',
+          '.mp4','.mov','.avi','.webm','.mkv','.m4v','.flv','.wmv','.mpeg','.mpg',
         ]);
 
         let content: string | undefined;
@@ -1187,7 +1188,7 @@ function updateEmbeddedRefs(notesText) {
     var href = notesText.slice(cb + 2, pe);
     var lhref = href.toLowerCase();
     var isLocal = lhref.startsWith('./') || lhref.startsWith('../');
-    var isBinaryExt = /\\.(zip|tar|gz|bz2|7z|rar|pdf|pptx?|xlsx?|docx?|exe|dmg|pkg|jar|class|pyc|so|dylib|dll|png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(lhref);
+    var isBinaryExt = /\\.(zip|tar|gz|bz2|7z|rar|pdf|pptx?|xlsx?|docx?|exe|dmg|pkg|jar|class|pyc|so|dylib|dll|png|jpg|jpeg|gif|webp|svg|bmp|ico|mp4|mov|avi|webm|mkv|m4v|flv|wmv|mpeg|mpg)$/i.test(lhref);
     if (isLocal && !isBinaryExt && !seen[href]) {
       seen[href] = true;
       ordered.push({ href: href, fname: href.split('/').pop() });
