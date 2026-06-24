@@ -704,6 +704,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .notes-area::placeholder{color:var(--vscode-input-placeholderForeground)}
 .save-indicator{font-size:9px;color:var(--vscode-descriptionForeground);opacity:0;transition:opacity .3s;padding-right:4px;cursor:default;text-transform:none;letter-spacing:0;font-weight:400}
 .save-indicator.show{opacity:1}
+.save-indicator.unsaved{opacity:1;color:var(--vscode-problemsWarningIcon-foreground,#cca700);transition:none}
 .add-btn{display:flex;align-items:center;justify-content:center;gap:5px;padding:7px;border:1px dashed var(--vscode-panel-border);border-radius:3px;font-size:11px;color:var(--vscode-descriptionForeground);cursor:pointer;background:none;width:100%;margin-bottom:6px}
 .add-btn:hover{border-color:var(--vscode-focusBorder);color:var(--vscode-foreground)}
 .ev-drop-active{outline:2px dashed var(--vscode-focusBorder);outline-offset:-3px}
@@ -856,9 +857,16 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .export-char-count{font-size:11px;color:var(--vscode-descriptionForeground);white-space:nowrap}
 .export-title-toggle{font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;color:var(--vscode-descriptionForeground);user-select:none}
 .export-area{flex:1;resize:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:none;padding:10px 12px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.6;min-height:320px;outline:none}
+.recovery-banner{display:none;align-items:center;gap:8px;padding:5px 12px;background:var(--vscode-inputValidation-warningBackground,#2d2600);border-bottom:1px solid var(--vscode-inputValidation-warningBorder,#cca700);font-size:11px;flex-shrink:0}
+.recovery-banner.visible{display:flex}
 </style>
 </head>
 <body>
+<div class="recovery-banner" id="recovery-banner">
+  <span>&#9888;&nbsp;Unsaved notes from a previous session were detected.</span>
+  <button class="btn" id="recovery-restore-btn" style="font-size:10px;padding:2px 8px">Restore</button>
+  <button class="btn" id="recovery-discard-btn" style="font-size:10px;padding:2px 8px">Discard</button>
+</div>
 <div class="header">
   <h2>${caseId} &mdash; <span id="case-title" contenteditable="true" spellcheck="false">${title}</span></h2>
   <div class="header-right">
@@ -987,6 +995,7 @@ window.onerror = function(msg, src, line) {
 const vscode = acquireVsCodeApi();
 let items = [];
 let saveTimer = null;
+var _recoveryNotes = '';
 var groupEls = {}; // groupName -> group container element
 var draggingEv = null; // set during evidence drag-and-drop
 var selectedEvIds = new Set();
@@ -1458,7 +1467,15 @@ window.addEventListener('message', function(evt) {
     m.evidence.forEach(addEvidence);
     renderFindings(m.findings);
     var ta = document.getElementById('notes-area');
-    if (ta && m.notes) { ta.value = m.notes; updateEmbeddedRefs(m.notes); }
+    var serverNotes = m.notes || '';
+    // Check if local state has unsaved notes from a previous freeze/crash
+    var localNotes = '';
+    try { var _ls = vscode.getState(); localNotes = (_ls && _ls.notes) || ''; } catch(e) {}
+    if (localNotes && localNotes !== serverNotes) {
+      _recoveryNotes = localNotes;
+      document.getElementById('recovery-banner').classList.add('visible');
+    }
+    if (ta) { ta.value = serverNotes; if (serverNotes) updateEmbeddedRefs(serverNotes); }
     updateStatusButton(m.status);
   }
   else if (m.type === 'statusChanged') { updateStatusButton(m.status); }
@@ -1520,14 +1537,18 @@ window.addEventListener('message', function(evt) {
 });
 
 function doSaveNotes() {
-  send('saveNotes', { notes: document.getElementById('notes-area').value });
+  var notes = document.getElementById('notes-area').value;
+  send('saveNotes', { notes: notes });
+  try { var _sv = vscode.getState() || {}; _sv.notes = notes; _sv.notesSavedAt = Date.now(); vscode.setState(_sv); } catch(e) {}
   var ind = document.getElementById('save-indicator');
-  if (ind) { ind.classList.add('show'); setTimeout(function() { ind.classList.remove('show'); }, 1200); }
+  if (ind) { ind.classList.remove('unsaved'); ind.textContent = 'Saved'; ind.classList.add('show'); setTimeout(function() { ind.classList.remove('show'); }, 1200); }
 }
 
 document.getElementById('notes-area').addEventListener('input', function() {
+  var ind = document.getElementById('save-indicator');
+  if (ind) { ind.classList.add('show'); ind.classList.add('unsaved'); ind.textContent = 'Unsaved'; }
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(doSaveNotes, 150);
+  saveTimer = setTimeout(doSaveNotes, 800);
   clearTimeout(embRefTimer);
   embRefTimer = setTimeout(function() { updateEmbeddedRefs(document.getElementById('notes-area').value); }, 600);
 });
@@ -1535,6 +1556,26 @@ document.getElementById('notes-area').addEventListener('input', function() {
 document.getElementById('notes-area').addEventListener('blur', function() {
   clearTimeout(saveTimer);
   doSaveNotes();
+});
+
+document.getElementById('recovery-restore-btn').addEventListener('click', function() {
+  var ta = document.getElementById('notes-area');
+  if (ta) {
+    ta.value = _recoveryNotes;
+    updateEmbeddedRefs(_recoveryNotes);
+    if (typeof previewMode !== 'undefined' && previewMode) {
+      document.getElementById('notes-preview').innerHTML = renderMd(_recoveryNotes);
+    }
+  }
+  document.getElementById('recovery-banner').classList.remove('visible');
+  doSaveNotes();
+  _recoveryNotes = '';
+});
+
+document.getElementById('recovery-discard-btn').addEventListener('click', function() {
+  document.getElementById('recovery-banner').classList.remove('visible');
+  try { var _dv = vscode.getState() || {}; _dv.notes = document.getElementById('notes-area').value; vscode.setState(_dv); } catch(e) {}
+  _recoveryNotes = '';
 });
 
 // -- Editable case title -------------------------------------------------------

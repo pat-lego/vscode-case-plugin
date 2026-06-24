@@ -523,7 +523,11 @@ export class CaseManager {
         if (ev.rawContent && ev.type !== 'screenshot') {
           const originalName = ev.filePath ? path.basename(ev.filePath) : '';
           storedFile = originalName || `${ev.id}.txt`;
-          fs.writeFileSync(path.join(caseDir, storedFile), ev.rawContent, 'utf-8');
+          const storedPath = path.join(caseDir, storedFile);
+          // rawContent is immutable after evidence is added — skip if already on disk
+          if (!fs.existsSync(storedPath)) {
+            fs.writeFileSync(storedPath, ev.rawContent, 'utf-8');
+          }
         }
         return {
           id: ev.id,
@@ -554,8 +558,11 @@ export class CaseManager {
 
     const body = buildCaseSummary(session);
     const md = `---\n${frontmatter}---\n\n${body}`;
-    fs.writeFileSync(path.join(caseDir, `${caseId}.md`), md, 'utf-8');
-    this.log.debug('case-mgr', 'writeToDisk ok', { caseId, path: path.join(caseDir, `${caseId}.md`) });
+    const mdPath = path.join(caseDir, `${caseId}.md`);
+    const tmpPath = `${mdPath}.tmp`;
+    fs.writeFileSync(tmpPath, md, 'utf-8');
+    fs.renameSync(tmpPath, mdPath);
+    this.log.debug('case-mgr', 'writeToDisk ok', { caseId, path: mdPath });
   }
 
   // ── Global state fallback (used when no casePaths are configured) ─────────
