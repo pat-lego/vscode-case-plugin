@@ -62,6 +62,49 @@ describe('classifyCacheMiss — verdict per scenario', () => {
   });
 });
 
+describe('cdn-stale-content — Vary fragmentation and concrete TTL/SWR recommendation', () => {
+  function findStaleContent(entries: ReturnType<typeof staleContentEntries>) {
+    return classifyCacheMiss(computeCdnMetrics(entries)).find(f => f.signatureId === 'cdn-stale-content');
+  }
+
+  it('flags high-cardinality Vary fragmentation with real numbers, not a bare suggestion', () => {
+    const entries = staleContentEntries(30, 10).map(e => ({ ...e, responseVary: 'Accept-Encoding, User-Agent' }));
+    const f = findStaleContent(entries)!;
+    const evidence = f.evidence.join(' ');
+    expect(evidence).toMatch(/of MISSes carry a Vary header — top values: "Accept-Encoding, User-Agent"/);
+    expect(evidence).toMatch(/high-cardinality header \(User-Agent \/ Cookie \/ Authorization \/ X-Forwarded-For \/ Accept-Language\)/);
+  });
+
+  it('distinguishes low-cardinality-only Vary (Accept-Encoding) from high-cardinality fragmentation', () => {
+    const entries = staleContentEntries(30, 10).map(e => ({ ...e, responseVary: 'Accept-Encoding' }));
+    const f = findStaleContent(entries)!;
+    const evidence = f.evidence.join(' ');
+    expect(evidence).toMatch(/Vary is limited to lower-cardinality headers here/);
+    expect(evidence).not.toMatch(/high-cardinality header/);
+  });
+
+  it('states plainly when no Vary header is present at all', () => {
+    const f = findStaleContent(staleContentEntries(30, 10))!;
+    expect(f.evidence.join(' ')).toMatch(/No Vary header observed on these MISSes/);
+  });
+
+  it('embeds the concrete recommended max-age/SWR values instead of a vague "raise them"', () => {
+    const base = Date.parse('2026-07-16T03:40:00Z');
+    const entries = [];
+    for (let u = 0; u < 12; u++) {
+      entries.push(makeEntry({ url: `/article/${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchCacheControl: 'max-age=30', responseTtl: 30, timeStart: new Date(base) }));
+      entries.push(makeEntry({ url: `/article/${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchCacheControl: 'max-age=30', responseTtl: 30, timeStart: new Date(base + 120000) }));
+    }
+    const m = computeCdnMetrics(entries);
+    expect(m.ttlDataSufficient).toBe(1);
+    const f = classifyCacheMiss(m).find(fnd => fnd.signatureId === 'cdn-stale-content')!;
+    const evidence = f.evidence.join(' ');
+    expect(evidence).toMatch(/Recommended fix \(full reasoning in the TTL-recommendation finding\): max-age ~5m \(current 30s\), stale-while-revalidate ~7d \(current none\)/);
+    expect(f.nextSteps.join(' ')).toMatch(/apply the recommended max-age\/stale-while-revalidate values shown above/i);
+    expect(f.relatedSignatures).toContain('cdn-ttl-recommendation');
+  });
+});
+
 describe('classifyCacheMiss — POP fragmentation + shielding', () => {
   const pops = ['BMA', 'FRA', 'LHR', 'AMS'];
 

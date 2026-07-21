@@ -16,6 +16,16 @@ function isCloudAsn(name: string): boolean {
   return CLOUD_ASN_RE.test(name || '');
 }
 
+/**
+ * Vary dimensions with enough distinct real-world values to fragment a cache key badly (every
+ * user/session/locale gets its own copy). Accept-Encoding is deliberately excluded — most CDNs
+ * normalize it to a handful of buckets (gzip/br/identity), so it alone is lower-risk.
+ */
+const HIGH_CARDINALITY_VARY_RE = /\b(user-agent|cookie|authorization|x-forwarded-for|accept-language)\b/i;
+function isHighCardinalityVary(vary: string): boolean {
+  return HIGH_CARDINALITY_VARY_RE.test(vary || '');
+}
+
 /** Field values that mean "absent" across the CDN log (empty, dash, none, …). */
 const BLANK = new Set(['', '-', 'none', 'n/a', '?']);
 function hasVal(s: string): boolean {
@@ -164,6 +174,9 @@ export class CdnAggregator {
   private missTimed = 0;
   private refetch = new Map<string, { ms: number; ttl: number }>();
   private refetchWithinTtlCount = 0;
+  private varyMissCount = 0;
+  private highCardinalityVaryMissCount = 0;
+  private varyValueCount = new Map<string, number>();
 
   // Request-rate / inter-arrival tracking (cacheable HIT+MISS) for TTL sizing
   private minTs = Infinity;
@@ -307,6 +320,12 @@ export class CdnAggregator {
     if (maxAge > 0) this.maxAgeCount.set(maxAge, (this.maxAgeCount.get(maxAge) ?? 0) + 1);
     const swr = extractStaleWhileRevalidate(`${e.fetchCacheControl};${e.fetchSurrogateControl}`);
     if (swr > 0) this.swrCount.set(swr, (this.swrCount.get(swr) ?? 0) + 1);
+
+    if (hasVal(e.responseVary)) {
+      this.varyMissCount++;
+      if (isHighCardinalityVary(e.responseVary)) this.highCardinalityVaryMissCount++;
+      this.varyValueCount.set(e.responseVary, (this.varyValueCount.get(e.responseVary) ?? 0) + 1);
+    }
 
     const ct = e.contentType.split(';')[0].trim() || 'unknown';
     this.ctCount.set(ct, (this.ctCount.get(ct) ?? 0) + 1);
@@ -579,6 +598,11 @@ export class CdnAggregator {
       staleEligibleMissShare: ratio(this.staleEligibleCount, missCount),
       avgMissTtlSeconds: ratio(this.ttlSum, this.ttlCount),
       refetchWithinTtlCount: this.refetchWithinTtlCount,
+      missVaryShare: ratio(this.varyMissCount, missCount),
+      highCardinalityVaryMissShare: ratio(this.highCardinalityVaryMissCount, missCount),
+      topMissVaryValues: [...this.varyValueCount.entries()]
+        .sort((a, b) => b[1] - a[1]).slice(0, 5)
+        .map(([value, count]) => ({ value, count })),
 
       windowSeconds,
       cacheableRequestRatePerMin,
@@ -698,6 +722,9 @@ function emptyMetrics(warnings: string[]): CdnMetrics {
     staleEligibleMissShare: 0,
     avgMissTtlSeconds: 0,
     refetchWithinTtlCount: 0,
+    missVaryShare: 0,
+    highCardinalityVaryMissShare: 0,
+    topMissVaryValues: [],
     windowSeconds: 0,
     cacheableRequestRatePerMin: 0,
     singleRequestCacheableUrlShare: 0,

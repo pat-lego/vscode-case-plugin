@@ -230,6 +230,7 @@ function toEntry(rec: Record<string, string>): CdnLogEntry {
     originHost: (rec.origin_host ?? '').trim(),
     originalXForwardedFor: (rec.original_x_forwarded_for ?? '').trim(),
     requestVia: (rec['xdata.request_via'] ?? rec.request_via ?? '').trim(),
+    responseVary: (rec.response_vary ?? '').trim(),
     timeStart: toDate(rec.time_start),
     raw: rec
   };

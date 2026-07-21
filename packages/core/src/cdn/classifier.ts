@@ -212,15 +212,28 @@ const HYPOTHESES: Hypothesis[] = [
       m.refetchWithinTtlCount > 0
         ? `${m.refetchWithinTtlCount} re-fetches of the same URL/POP within its TTL — content is not being stored (no-store / Set-Cookie / Vary), not merely expiring`
         : 'No same-POP re-fetch-within-TTL detected (timing may be partial)',
+      ...(m.missVaryShare > 0
+        ? [
+            `${pct(m.missVaryShare)} of MISSes carry a Vary header — top values: ${m.topMissVaryValues.slice(0, 3).map(v => `"${v.value}" (${v.count}×)`).join(', ')}`,
+            m.highCardinalityVaryMissShare > 0
+              ? `${pct(m.highCardinalityVaryMissShare)} of MISSes vary on a high-cardinality header (User-Agent / Cookie / Authorization / X-Forwarded-For / Accept-Language) — each distinct value is its own cache entry, so a POP that "already has" this URL can still MISS if this request's value doesn't match the cached variant`
+              : 'Vary is limited to lower-cardinality headers here (e.g. Accept-Encoding) — fragmentation is possible but bounded, unless the CDN fails to normalize those values'
+          ]
+        : ['No Vary header observed on these MISSes — cache-key fragmentation by Vary is not the explanation here']),
+      ...(m.ttlDataSufficient && m.recommendedTtlSeconds > 0
+        ? [
+            `Recommended fix (full reasoning in the TTL-recommendation finding): max-age ~${fmtDur(m.recommendedTtlSeconds)} (current ${m.observedMaxAgeSeconds > 0 ? fmtDur(m.observedMaxAgeSeconds) : 'none'}), stale-while-revalidate ~${fmtDur(m.recommendedSwrSeconds)} (current ${m.observedSwrSeconds > 0 ? fmtDur(m.observedSwrSeconds) : 'none'})`
+          ]
+        : []),
       ...m.topMissUrls.filter(u => u.count - u.pops > 0).slice(0, 5).map(u => `  ${urlReason(u)} — ${u.url}`)
     ],
     nextSteps: [
       'These URLs were re-fetched at a POP that already had them — inspect the origin response: a short/missing Cache-Control/Surrogate-Control TTL, no-store, or Set-Cookie on a cacheable path prevents retention.',
-      'Check for a response Vary header (e.g. Vary: User-Agent) fragmenting the object into many uncacheable variants.',
+      'If the evidence above shows Vary fragmentation: normalize Accept-Encoding at the CDN (most support this) and remove unnecessary high-cardinality Vary dimensions (User-Agent, Cookie, Accept-Language) at the origin unless the response genuinely differs per that dimension.',
       'Confirm is_cacheable=true for these paths — if false, the object is never stored and every request MISSes.',
-      'If TTLs are simply short, raise them and use stale-while-revalidate to avoid MISS spikes on expiry.'
+      'If TTLs are simply short, apply the recommended max-age/stale-while-revalidate values shown above — do not guess a magnitude.'
     ],
-    related: ['cdn-pop-fragmentation']
+    related: ['cdn-pop-fragmentation', 'cdn-ttl-recommendation']
   },
   {
     id: 'cdn-pop-fragmentation',

@@ -129,6 +129,33 @@ describe('computeCdnMetrics — refetch within TTL timing', () => {
   });
 });
 
+describe('computeCdnMetrics — Vary header fragmentation', () => {
+  it('reports the Vary share and top values, distinguishing high- from low-cardinality dimensions', () => {
+    const m = computeCdnMetrics([
+      makeEntry({ url: '/a', responseVary: 'Accept-Encoding' }),
+      makeEntry({ url: '/b', responseVary: 'Accept-Encoding' }),
+      makeEntry({ url: '/c', responseVary: 'Accept-Encoding, User-Agent' }),
+      makeEntry({ url: '/d', responseVary: '' })
+    ]);
+    expect(m.missVaryShare).toBeCloseTo(0.75, 5); // 3 of 4 carry a Vary header
+    expect(m.highCardinalityVaryMissShare).toBeCloseTo(0.25, 5); // only the User-Agent one
+    expect(m.topMissVaryValues[0]).toEqual({ value: 'Accept-Encoding', count: 2 });
+  });
+
+  it('is all zero/empty when no MISS carries a Vary header', () => {
+    const m = computeCdnMetrics(uniqueUrlBurstEntries(10));
+    expect(m.missVaryShare).toBe(0);
+    expect(m.highCardinalityVaryMissShare).toBe(0);
+    expect(m.topMissVaryValues).toEqual([]);
+  });
+
+  it('does not flag Accept-Encoding alone as high-cardinality', () => {
+    const m = computeCdnMetrics(uniqueUrlBurstEntries(10).map(e => ({ ...e, responseVary: 'Accept-Encoding' })));
+    expect(m.missVaryShare).toBe(1);
+    expect(m.highCardinalityVaryMissShare).toBe(0);
+  });
+});
+
 // ── POP fragmentation ─────────────────────────────────────────────────────────────
 
 describe('computeCdnMetrics — POP fragmentation', () => {

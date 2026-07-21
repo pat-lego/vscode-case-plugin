@@ -35,6 +35,7 @@ export function makeEntry(o: Partial<CdnLogEntry> = {}): CdnLogEntry {
     originHost: 'www.example.com',
     originalXForwardedFor: '',
     requestVia: '',
+    responseVary: '',
     timeStart: undefined,
     raw: {},
     ...o
@@ -190,6 +191,7 @@ export function toRaw(e: Partial<CdnLogEntry>): Record<string, string> {
     aem_service: m.aemService,
     origin_host: m.originHost,
     original_x_forwarded_for: m.originalXForwardedFor,
-    'xdata.request_via': m.requestVia
+    'xdata.request_via': m.requestVia,
+    response_vary: m.responseVary
   };
 }

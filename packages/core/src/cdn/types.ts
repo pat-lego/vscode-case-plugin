@@ -161,6 +161,13 @@ export interface CdnLogEntry {
    * corroborating {@link originalXForwardedFor}.
    */
   requestVia: string;
+  /**
+   * The response `Vary` header (`response_vary`), e.g. "Accept-Encoding" or "User-Agent, Cookie".
+   * A cache stores a separate copy per distinct value of each named request header — a URL that
+   * "should have HIT" at a POP that already fetched it can still MISS if this request's value for
+   * a Vary'd header differs from whichever variant is cached there.
+   */
+  responseVary: string;
   /** Request start time (`time_start`), when parseable. */
   timeStart?: Date;
   /** The original untyped key/value record, for evidence and debugging. */
@@ -293,6 +300,18 @@ export interface CdnMetrics {
   avgMissTtlSeconds: number;
   /** Consecutive MISSes of the same URL on the same POP re-fetched within the TTL window. */
   refetchWithinTtlCount: number;
+  /** Share of MISSes carrying any (non-blank) response Vary header. */
+  missVaryShare: number;
+  /**
+   * Share of MISSes whose Vary header names a high-cardinality request header (User-Agent,
+   * Cookie, Authorization, X-Forwarded-For, Accept-Language) — each distinct value fragments the
+   * cache key for that URL, so even a POP that "already has" the URL can still MISS if this
+   * request's value differs from whichever variant is cached. Lower-cardinality Vary values (e.g.
+   * Accept-Encoding alone) are excluded — most CDNs normalize those to a handful of buckets.
+   */
+  highCardinalityVaryMissShare: number;
+  /** Top Vary header values seen on MISSes, by count (evidence). */
+  topMissVaryValues: Array<{ value: string; count: number }>;
 
   // ── TTL / request-rate sizing (over cacheable HIT+MISS with timestamps) ───────────
   /** Observed window duration in seconds (max−min time_start across cacheable requests). */

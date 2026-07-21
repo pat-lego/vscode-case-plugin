@@ -38,7 +38,8 @@ export const CDN_FIELDS = [
   'time_start',
   'origin_host',
   'original_x_forwarded_for',
-  'xdata.request_via'
+  'xdata.request_via',
+  'response_vary'
 ] as const;
 
 const DEFAULT_MAX_EVENTS = 100000;
