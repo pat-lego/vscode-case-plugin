@@ -17,6 +17,8 @@ import { ManualSignatureBuilderPanel } from './panels/manual-signature-builder.w
 import { CaseResolutionPanel } from './panels/case-resolution.webview';
 import { StaticAnalysisPanel } from './panels/static-analysis.webview';
 import { ThreadQueryPanel } from './panels/thread-query.webview';
+import { CdnAnalysisService } from './services/cdn-service';
+import { CdnAnalysisPanel } from './panels/cdn-analysis.webview';
 import { createLogger } from './logger';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -28,6 +30,7 @@ export function activate(context: vscode.ExtensionContext) {
   const caseManager     = new CaseManager(context, log);
   const sigService      = new SignatureService(context);
   const analysisService = new AnalysisService(caseManager, sigService, log);
+  const cdnService      = new CdnAnalysisService(log);
   const bridgeServer    = new BridgeServer(caseManager, analysisService, log);
 
   // Providers
@@ -183,6 +186,9 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('investigator.runStaticAnalysis', () => {
       StaticAnalysisPanel.show(context, analysisService, caseManager, log);
+    }),
+    vscode.commands.registerCommand('investigator.analyzeCdnCacheMisses', () => {
+      CdnAnalysisPanel.show(context, cdnService, log);
     }),
     vscode.commands.registerCommand('investigator.editSignature', (item: SignatureItem) => {
       const sig = sigService.getById(item.sigId);

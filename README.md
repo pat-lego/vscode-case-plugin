@@ -18,6 +18,7 @@ A VS Code extension + browser extension for diagnosing JVM/AEM incidents. You dr
 5. [Using the tool](#using-the-tool)
    - [Flow A: system is slow or crashed — start with thread dumps](#flow-a-system-is-slow-or-crashed--start-with-thread-dumps)
    - [Flow B: you have a known error — start with logs](#flow-b-you-have-a-known-error--start-with-logs)
+   - [Flow C: too many cache MISSes / HTTP 429s — analyze CDN logs](#flow-c-too-many-cache-misses--http-429s--analyze-cdn-logs)
    - [Capturing data from the browser](#capturing-data-from-the-browser)
    - [Requesting a Claude review](#requesting-a-claude-review)
    - [Resolving a case and saving a signature](#resolving-a-case-and-saving-a-signature)
@@ -239,6 +240,50 @@ You know the error message but don't know the cause.
    - Log-based evidence alone won't match thread dump signatures, but the evidence panel records the log data and the timeline
    - The findings panel will show any partial matches and suggest *"collect a thread dump from this window"*
 4. **Collect thread dumps from the same time window** and add them to confirm
+
+---
+
+### Flow C: too many cache MISSes / HTTP 429s — analyze CDN logs
+
+When a CDN is throwing a burst of cache MISSes (often surfacing as HTTP 429s), the question is *why*: a flood of unique/uncacheable URLs, stale content re-fetched after TTL expiry, the same URLs fragmenting across many POPs, or a bot burst hitting rarely-used cold POPs. This flow makes that determination from the CDN access logs in Splunk — no thread dumps involved.
+
+1. **Open the panel** — Command Palette → **Analyze CDN Cache Misses**, or the cloud icon in the Open Cases title bar.
+2. **Provide the inputs**
+   - **AEM service** — the `aem_service` id, e.g. `cm-p53812-e590634`
+   - **Tier** — `publish` or `author` (`aem_tier`), defaulting to publish
+   - **From / To** — the incident window, as ISO 8601 (`2026-07-16T03:30:00Z`) or Splunk relative modifiers (`-60m@m`, `now`)
+   - **URLs** — optional, one per line, `*` wildcards allowed; leave empty to analyze all URLs for the service
+3. **Run it** — the tool builds an SPL query and runs it via `sky splunk query` (you must be logged in: `sky splunk login`). The response is **streamed and aggregated incrementally**, so large CDN volumes stay memory-bounded (e.g. ~63 MB / 10.8k events analysed in ~14 MB of heap); results are capped at `investigator.cdn.maxEvents` (default 100k) and truncation is flagged. A second, cheap query samples normal POP usage over the ≤2 days before the window to decide which POPs are "rarely used". CDN queries are slow — narrow the window and URL set.
+4. **Read the verdict** — the panel first shows **why the MISSes happened**, decided per (URL, POP): a *first fetch at that POP* (cold cache — the object was never there, expected) vs a *re-fetch at a POP that already had it* (should have HIT — not staying cached) vs *marked uncacheable* (`is_cacheable=false`). Alongside are key metrics (MISS ratio, 429 correlation, cold vs same-POP share, POP spread, shielding, bot/rare-POP share) and ranked findings. Each finding is one of:
+
+   | Hypothesis | What it means |
+   |---|---|
+   | **Responses are not cacheable** (no cache lifetime) | The edge fetched from origin but won't store the result, so every request MISSes. Decided from the origin `Cache-Control` / `Surrogate-Control` — **no positive `max-age`/`s-maxage`** (a `stale-while-revalidate`-only directive isn't cacheable) or an explicit `no-store`/`private`. The `is_cacheable` field alone is **not** trusted (it can read `false` even with a real `max-age`). Ranked first — until fixed, shielding/TTL changes won't help |
+   | **Burst of unique / uncacheable URLs** | Most MISSes are for distinct, single-request URLs — inherently uncacheable traffic |
+   | **Content not staying cached (same-POP re-fetches)** | The same URLs MISS again *at a POP that already fetched them* — short TTL, no-store, `Vary`, or eviction |
+   | **Cache fragmentation across POPs** | The same URLs MISS across many POPs, each a cold first-fetch. Reads `shielding_used` to report whether origin shielding is on/off and recommends enabling it when off |
+   | **Bot burst on rarely-used POPs** | Bot traffic from one network hits cold POPs with no warm cache, going straight to origin |
+
+   Each finding annotates its top URLs with the reason (e.g. *"5× across 5 POPs (one first fetch per POP — cold cache at each edge)"*). The HTTP 429s are reported as a correlated *symptom* (how many landed on MISSes, plus any origin 5xx), not a root cause.
+
+   **PASS analysis.** `cache_status: PASS` is excluded from the MISS root-cause, but PASS is analysed separately because its status mix matters:
+   - **Cacheable (200) responses bypassing cache** — a majority of PASS returning **200** is an anomaly (a 200 is cacheable, so passing it wastes cache and loads origin). The tool explains why via `fetch_action` (no cache headers → `pass_noheaders`; or `private`/`no-store`) and recommends adding a `max-age`.
+   - **Uncacheable non-200 responses (manual investigation)** — 3xx/4xx/5xx can't be cached, so a PASS is expected; but a large volume (redirect loops, origin errors) is flagged for a manual look, with a status breakdown. **429s are excluded** here — they're reported as the origin-stress symptom instead.
+
+   **TTL recommendation.** Shielding only helps if the object outlives the gap between requests, so the tool sizes a TTL from the observed request rate. It measures the inter-arrival gap between repeat requests to the same URL — **aggregate** (what a shield sees) vs **per-POP** (what an edge sees) — and recommends a `Surrogate-Control: max-age` that keeps ~90% of repeat requests served before expiry, comparing it to the current `max-age`. Single-request URLs (which can't be sized from one window) and the window length are flagged as caveats — a longer analysis window gives a firmer number.
+
+   **Suspicious traffic / possible DDoS.** Flags a burst concentrated in **cloud/hosting ASNs** (not eyeball ISPs), a single ASN dominating traffic, a high peak-vs-mean **burst ratio**, and requests the CDN already flagged (`ddos_action` / `ddos_rule` / `malicious_flags` / `deny_reason`) — e.g. a redirect flood from a hosting network. Lists the top source ASNs and recommends rate-limiting / challenging / blocking them.
+
+   **CDN log-field notes (from the Skyline CDN VCL):**
+   - `cache_status` is the collapsed base state — `MISS` covers `MISS`, `MISS-CLUSTER`, `MISS-WAIT` (Fastly intra-POP clustering); `HIT` covers `HIT`, `HIT-CLUSTER`, `HIT-STALE`, `HIT-STALE-CLUSTER`, etc. This is the field the analysis keys on.
+   - **`is_cacheable` is NOT used** — the edge logs it as `fastly_info.state ~ "^(HIT|MISS)$"` (exact match), so any clustered state (`HIT-CLUSTER`, `MISS-CLUSTER`) reads `false` even for cacheable, cached content. It's a clustering artifact / effectively a bug for this purpose; cacheability is decided from `Cache-Control`/`Surrogate-Control` (positive `max-age`/`s-maxage`, no `no-store`/`private`) and `fetch_action` (`pass_private` / `pass_s_private` / `pass_noheaders` → uncacheable, which the CDN turns into a `PASS`).
+5. **Copy Markdown** — export the full report, including the **exact `sky splunk query` commands** that were run (so you can show your work or re-run them by hand), to paste into a case, ticket, or Slack.
+
+**Capture the raw data:** in Query mode, **Run & save raw...** runs the query and writes the raw response (NDJSON) to a file you choose, then analyses it — so you have the underlying data to keep or replay.
+
+**Replay a saved export (no query):** set **Data source** to *Analyze a pasted / saved export*, then either paste `sky splunk query` output into the box or click **Load export file...** (e.g. the file from *Run & save raw...* or `sky splunk query '<SPL>' > out.json`). This is ideal for a log you captured earlier (`sky splunk query '<SPL>' > out.json`) or one a colleague shared — no Splunk round-trip and no `sky splunk login` needed. Files are streamed line-by-line, so a ~60 MB export analyses in well under a second. (POP rarity uses the in-window heuristic in this mode, since no historical baseline is fetched.)
+
+> The index defaults to `dx_aem_edge_prod`, which needs no sourcetype filter. If your CDN logs live elsewhere or require a sourcetype, set `investigator.cdn.splunkIndex` / `investigator.cdn.splunkSourcetype` (see settings reference). The query built for your example is: `search index=dx_aem_edge_prod aem_service=cm-p53812-e590634 aem_tier=publish url="/apac*" earliest=... latest=... | fields ... | head N`.
 
 ---
 
@@ -523,6 +568,14 @@ On non-Splunk pages, if you have text selected, only the selection is captured. 
 | `investigator.threadCountThreshold` | `500` | Thread count above which `threadCountAnomaly` is flagged as 1. Adjust based on your application's normal thread count. |
 | `investigator.bridgePort` | `7734` | WebSocket port for the browser extension bridge. Change if another process uses 7734. Must match the port in the browser extension popup. |
 | `investigator.claudeApiKey` | *(none)* | Anthropic API key. Only needed if you use the Claude review feature. Get one at console.anthropic.com. |
+| `investigator.cdn.splunkIndex` | `dx_aem_edge_prod` | Splunk index holding the CDN access logs (used by Analyze CDN Cache Misses). |
+| `investigator.cdn.splunkSourcetype` | *(none)* | Optional. Splunk sourcetype for the CDN logs; leave empty if the index alone scopes to CDN logs. |
+| `investigator.cdn.defaultTier` | `publish` | Default AEM tier (`aem_tier`) to analyze. Change it per run in the panel. |
+| `investigator.cdn.skyPath` | `sky` | Path to the `sky` CLI used to run Splunk queries. Defaults to resolving `sky` on PATH. |
+| `investigator.cdn.fetchBaseline` | `true` | Run a second, cheap query for normal POP usage (to flag rarely-used/cold POPs). Doubles the query count. |
+| `investigator.cdn.baselineDays` | `2` | Days before the incident window to sample for the POP baseline. Capped at 2 (CDN queries are expensive). |
+| `investigator.cdn.maxEvents` | `100000` | Row cap for the incident query (`\| head N`). Results are truncated (and flagged) when exceeded. |
+| `investigator.cdn.timeoutSeconds` | `300` | Timeout for each `sky splunk query` invocation, in seconds. |
 
 To edit settings: `Cmd+,` → search *Incident Investigator*, or edit `settings.json` directly.
 
@@ -545,8 +598,15 @@ incident-investigator/
 │   │       ├── engine/
 │   │       │   ├── signal-extractor.ts   ← aggregates signals across dumps
 │   │       │   └── signature-matcher.ts  ← evaluates signature conditions
-│   │       └── signatures/
-│   │           └── loader.ts             ← reads YAML files from disk
+│   │       ├── signatures/
+│   │       │   └── loader.ts             ← reads YAML files from disk
+│   │       └── cdn/                      ← CDN cache-miss analysis
+│   │           ├── query-builder.ts      ← builds the sky splunk query SPL
+│   │           ├── fetcher.ts            ← runs `sky splunk query` (execFile)
+│   │           ├── parser.ts             ← parses Splunk JSON / NDJSON / _raw
+│   │           ├── metrics.ts            ← aggregates MISS signals
+│   │           ├── classifier.ts         ← ranks the four MISS-cause hypotheses
+│   │           └── analyzer.ts           ← fetch → metrics → classify orchestrator
 │   │
 │   ├── vscode-extension/           ← VS Code extension
 │   │   └── src/

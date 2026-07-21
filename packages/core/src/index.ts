@@ -8,3 +8,4 @@ export * from './engine/signal-extractor';
 export * from './engine/signature-matcher';
 export * from './signatures/loader';
 export * from './query/thread-query';
+export * from './cdn/index';

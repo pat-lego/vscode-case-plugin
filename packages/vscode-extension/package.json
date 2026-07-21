@@ -79,7 +79,8 @@
       { "command": "investigator.newSignature", "title": "New Signature", "icon": "$(add)" },
       { "command": "investigator.addToCase", "title": "Add to Case", "icon": "$(add)" },
       { "command": "investigator.reviewEvidenceWithAI", "title": "Send Evidence to AI", "icon": "$(robot)" },
-      { "command": "investigator.queryThreadDumps", "title": "Query Thread Dumps", "icon": "$(search)" }
+      { "command": "investigator.queryThreadDumps", "title": "Query Thread Dumps", "icon": "$(search)" },
+      { "command": "investigator.analyzeCdnCacheMisses", "title": "Analyze CDN Cache Misses", "icon": "$(cloud-download)" }
     ],
     "menus": {
       "view/title": [
@@ -90,6 +91,16 @@
         },
         {
           "command": "investigator.filterOpenCases",
+          "when": "view == investigator.openCases",
+          "group": "navigation"
+        },
+        {
+          "command": "investigator.runStaticAnalysis",
+          "when": "view == investigator.openCases",
+          "group": "navigation"
+        },
+        {
+          "command": "investigator.analyzeCdnCacheMisses",
           "when": "view == investigator.openCases",
           "group": "navigation"
         },
@@ -133,11 +144,6 @@
           "group": "navigation@2"
         },
         {
-          "command": "investigator.runStaticAnalysis",
-          "when": "(view == investigator.openCases || view == investigator.closedCases) && viewItem == case",
-          "group": "navigation@3"
-        },
-        {
           "command": "investigator.viewSignature",
           "when": "view == investigator.signatures && viewItem == signature",
           "group": "navigation@1"
@@ -174,6 +180,48 @@
         "investigator.notesTemplatePath": {
           "type": "string",
           "description": "Path to a Markdown file used as the template for new case notes. Supports placeholders: {{caseId}}, {{title}}, {{date}}, {{initials}}."
+        },
+        "investigator.cdn.splunkIndex": {
+          "type": "string",
+          "default": "dx_aem_edge_prod",
+          "description": "Splunk index that holds the CDN access logs (used by Analyze CDN Cache Misses)."
+        },
+        "investigator.cdn.splunkSourcetype": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: Splunk sourcetype for the CDN logs. Leave empty if the index alone scopes to CDN logs (dx_aem_edge_prod needs no sourcetype). Set it only if your index mixes sourcetypes."
+        },
+        "investigator.cdn.defaultTier": {
+          "type": "string",
+          "enum": ["publish", "author"],
+          "default": "publish",
+          "description": "Default AEM tier (aem_tier) to analyze. Can be changed per run in the panel."
+        },
+        "investigator.cdn.skyPath": {
+          "type": "string",
+          "default": "sky",
+          "description": "Path to the `sky` CLI used to run Splunk queries. Defaults to resolving 'sky' on PATH."
+        },
+        "investigator.cdn.fetchBaseline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a second, cheap Splunk query for normal POP usage (to identify rarely-used/cold POPs). CDN queries are slow, so this doubles query count."
+        },
+        "investigator.cdn.baselineDays": {
+          "type": "number",
+          "default": 2,
+          "maximum": 2,
+          "description": "How many days before the incident window to sample for the POP-usage baseline. Capped at 2 (CDN queries are expensive)."
+        },
+        "investigator.cdn.maxEvents": {
+          "type": "number",
+          "default": 100000,
+          "description": "Row cap applied to the incident query (| head N). Raise for very busy services; results are truncated (and flagged) when exceeded."
+        },
+        "investigator.cdn.timeoutSeconds": {
+          "type": "number",
+          "default": 300,
+          "description": "Timeout for each `sky splunk query` invocation, in seconds."
         }
       }
     }
