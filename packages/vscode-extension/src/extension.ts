@@ -188,7 +188,7 @@ export function activate(context: vscode.ExtensionContext) {
       StaticAnalysisPanel.show(context, analysisService, caseManager, log);
     }),
     vscode.commands.registerCommand('investigator.analyzeCdnCacheMisses', () => {
-      CdnAnalysisPanel.show(context, cdnService, log);
+      CdnAnalysisPanel.show(context, cdnService, caseManager, log);
     }),
     vscode.commands.registerCommand('investigator.editSignature', (item: SignatureItem) => {
       const sig = sigService.getById(item.sigId);

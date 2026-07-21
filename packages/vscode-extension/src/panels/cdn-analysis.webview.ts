@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { CdnAnalysisReport, CdnAnalysisInput } from '@incident-investigator/core';
 import { CdnAnalysisService } from '../services/cdn-service';
+import { CaseManager } from '../services/case-manager';
 import { IILogger, nullLogger } from '../logger';
 
 /**
@@ -11,7 +13,7 @@ import { IILogger, nullLogger } from '../logger';
  * Either way it renders the ranked cache-MISS hypotheses as findings.
  */
 export class CdnAnalysisPanel {
-  static show(_context: vscode.ExtensionContext, service: CdnAnalysisService, log: IILogger = nullLogger) {
+  static show(_context: vscode.ExtensionContext, service: CdnAnalysisService, caseManager: CaseManager, log: IILogger = nullLogger) {
     const panel = vscode.window.createWebviewPanel(
       'investigator.cdnAnalysis',
       'CDN Cache Miss Analysis',
@@ -142,6 +144,48 @@ export class CdnAnalysisPanel {
         await vscode.env.clipboard.writeText(reportToMarkdown(lastReport));
         vscode.window.showInformationMessage('CDN analysis copied to clipboard as Markdown.');
       }
+
+      if (msg.type === 'addFindingToCase') {
+        const index = Number(msg.index);
+        const finding = lastReport?.findings?.[index];
+        if (!lastReport || !finding) {
+          panel.webview.postMessage({ type: 'addFindingToCaseResult', index, ok: false, error: 'Finding not found — re-run the analysis.' });
+          return;
+        }
+        const caseId = caseManager.getActiveCaseId();
+        if (!caseId) {
+          panel.webview.postMessage({ type: 'addFindingToCaseResult', index, ok: false, error: 'No active case open.' });
+          return;
+        }
+        const caseDir = caseManager.getCaseDir(caseId);
+        if (!caseDir) {
+          panel.webview.postMessage({ type: 'addFindingToCaseResult', index, ok: false, error: 'Could not determine case directory.' });
+          return;
+        }
+        try {
+          fs.mkdirSync(caseDir, { recursive: true });
+          const markdown = findingToMarkdown(lastReport, finding);
+          const ts = new Date();
+          const stamp = `${ts.getFullYear()}${String(ts.getMonth() + 1).padStart(2, '0')}${String(ts.getDate()).padStart(2, '0')}-${String(ts.getHours()).padStart(2, '0')}h${String(ts.getMinutes()).padStart(2, '0')}m`;
+          const filename = `cdn-${slugify(finding.signatureName)}-${stamp}.md`;
+          const filePath = path.join(caseDir, filename);
+          fs.writeFileSync(filePath, markdown, 'utf-8');
+          const evId = `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          caseManager.addEvidence(caseId, {
+            id: evId,
+            type: 'generic',
+            source: filename,
+            capturedAt: ts,
+            filePath
+          });
+          log.info('cdn', 'addFindingToCase success', { caseId, filename });
+          panel.webview.postMessage({ type: 'addFindingToCaseResult', index, ok: true, filename });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log.error('cdn', 'addFindingToCase failed', { err: message });
+          panel.webview.postMessage({ type: 'addFindingToCaseResult', index, ok: false, error: message });
+        }
+      }
     });
   }
 }
@@ -200,21 +244,47 @@ function reportToMarkdown(r: CdnAnalysisReport): string {
 
   lines.push('## Findings');
   for (const f of r.findings) {
-    lines.push('', `### [${f.confidence.toUpperCase()}] ${f.signatureName}`);
-    if (f.matchedConditions.length) {
-      lines.push('**Signals matched:**');
-      for (const c of f.matchedConditions) lines.push(`- ${c.description} — \`${c.observedValue}\``);
-    }
-    if (f.evidence.length) {
-      lines.push('**Evidence:**');
-      for (const e of f.evidence) lines.push(`- ${e}`);
-    }
-    if (f.nextSteps.length) {
-      lines.push('**Next steps:**');
-      for (const s of f.nextSteps) lines.push(`- ${s}`);
-    }
+    lines.push('', ...findingLines(f));
   }
   return lines.join('\n');
+}
+
+/** Renders a single finding's heading, signals, evidence and next steps as Markdown lines. */
+function findingLines(f: CdnAnalysisReport['findings'][number]): string[] {
+  const lines: string[] = [`### [${f.confidence.toUpperCase()}] ${f.signatureName}`];
+  if (f.matchedConditions.length) {
+    lines.push('**Signals matched:**');
+    for (const c of f.matchedConditions) lines.push(`- ${c.description} — \`${c.observedValue}\``);
+  }
+  if (f.evidence.length) {
+    lines.push('**Evidence:**');
+    for (const e of f.evidence) lines.push(`- ${e}`);
+  }
+  if (f.nextSteps.length) {
+    lines.push('**Next steps:**');
+    for (const s of f.nextSteps) lines.push(`- ${s}`);
+  }
+  return lines;
+}
+
+/** Renders a single finding as a standalone Markdown doc (with report context) for the "Add to Case" action. */
+function findingToMarkdown(r: CdnAnalysisReport, f: CdnAnalysisReport['findings'][number]): string {
+  const lines: string[] = [
+    `# CDN Cache Miss Analysis — ${r.input.service} — ${f.signatureName}`,
+    '',
+    `**Tier:** ${r.input.tier ?? 'publish'}`,
+    `**Window:** ${r.input.from} → ${r.input.to}`,
+    r.input.urls && r.input.urls.length ? `**URLs:** ${r.input.urls.join(', ')}` : '**URLs:** (all)',
+    `**Generated:** ${new Date(r.generatedAt).toISOString()}`,
+    '',
+    ...findingLines(f)
+  ];
+  return lines.join('\n');
+}
+
+/** Slugifies a signature name for use in a filename. */
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'finding';
 }
 
 function pct(x: number): string {
@@ -262,6 +332,9 @@ input:focus,textarea:focus,select:focus{outline:1px solid var(--vscode-focusBord
 .finding ul{margin:6px 0 6px 16px;font-size:11px}
 .finding .cond{color:var(--vscode-foreground)}
 .finding .obs{color:var(--vscode-descriptionForeground)}
+.finding-top{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+.btn-sm{padding:2px 8px;font-size:10px;margin-left:auto}
+.add-case-msg{font-size:10px}
 .label-sm{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--vscode-descriptionForeground);margin-top:6px}
 code{font-family:var(--vscode-editor-font-family,monospace);font-size:11px}
 details{margin:8px 0}
@@ -383,10 +456,14 @@ function pct(x){ return Math.round(x*100)+'%'; }
 
 function metric(k, v){ return '<div class="metric"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>'; }
 
-function renderFinding(f){
+function renderFinding(f, index){
   let h = '<div class="finding '+esc(f.confidence)+'">';
+  h += '<div class="finding-top">';
   h += '<span class="badge '+esc(f.confidence)+'">'+esc(f.confidence)+'</span>';
   h += '<h4>'+esc(f.signatureName)+'</h4>';
+  h += '<button class="btn btn-sm add-case-btn" data-index="'+index+'" type="button">+ Add to Case</button>';
+  h += '<span class="meta add-case-msg" data-index="'+index+'"></span>';
+  h += '</div>';
   if (f.matchedConditions && f.matchedConditions.length){
     h += '<div class="label-sm">Signals matched</div><ul>';
     for (const c of f.matchedConditions){
@@ -448,10 +525,20 @@ function render(report){
   if (!report.findings || !report.findings.length){
     h += '<div class="meta">No hypotheses met their thresholds.</div>';
   } else {
-    for (const f of report.findings){ h += renderFinding(f); }
+    report.findings.forEach((f, i) => { h += renderFinding(f, i); });
   }
   $('results').innerHTML = h;
 }
+
+document.getElementById('results').addEventListener('click', ev => {
+  const btn = ev.target && ev.target.closest && ev.target.closest('.add-case-btn');
+  if (!btn) return;
+  const index = Number(btn.dataset.index);
+  btn.disabled = true;
+  const msgEl = document.querySelector('.add-case-msg[data-index="'+index+'"]');
+  if (msgEl) msgEl.textContent = 'Saving...';
+  vscode.postMessage({ type: 'addFindingToCase', index: index });
+});
 
 window.addEventListener('message', ev => {
   const msg = ev.data;
@@ -468,6 +555,20 @@ window.addEventListener('message', ev => {
   }
   if (msg.type === 'idle'){
     $('status').textContent = '';
+  }
+  if (msg.type === 'addFindingToCaseResult'){
+    const btn = document.querySelector('.add-case-btn[data-index="'+msg.index+'"]');
+    const msgEl = document.querySelector('.add-case-msg[data-index="'+msg.index+'"]');
+    if (btn) btn.disabled = false;
+    if (msgEl){
+      if (msg.ok){
+        msgEl.textContent = 'Saved: '+msg.filename;
+        msgEl.style.color = 'var(--vscode-charts-green,#4ec9b0)';
+      } else {
+        msgEl.textContent = 'Error: '+(msg.error || 'unknown error');
+        msgEl.style.color = 'var(--vscode-errorForeground)';
+      }
+    }
   }
 });
 onMode();

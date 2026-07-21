@@ -21,7 +21,7 @@ export interface BridgeCapture {
 export class BridgeServer implements vscode.Disposable {
   private httpServer: http.Server | undefined;
   private server: WebSocketServer | undefined;
-  private clients = new Set<WebSocket.WebSocket>();
+  private clients = new Set<WebSocket>();
   private lastActivityAt = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private static readonly ACTIVITY_TTL = 60_000; // 60s after last contact → disconnected
@@ -184,7 +184,7 @@ export class BridgeServer implements vscode.Disposable {
     this.broadcast(payload);
   }
 
-  private handleMessage(ws: WebSocket.WebSocket, msg: Record<string, unknown>) {
+  private handleMessage(ws: WebSocket, msg: Record<string, unknown>) {
     if (msg.type !== 'ping') {
       this.log.debug('bridge', 'ws ← received', { type: msg.type });
     }
@@ -256,14 +256,14 @@ export class BridgeServer implements vscode.Disposable {
   private broadcast(payload: object) {
     const data = JSON.stringify(payload);
     for (const client of this.clients) {
-      if (client.readyState === WebSocket.WebSocket.OPEN) {
+      if (client.readyState === WebSocket.OPEN) {
         client.send(data);
       }
     }
   }
 
-  private sendTo(ws: WebSocket.WebSocket, payload: object) {
-    if (ws.readyState === WebSocket.WebSocket.OPEN) {
+  private sendTo(ws: WebSocket, payload: object) {
+    if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     }
   }

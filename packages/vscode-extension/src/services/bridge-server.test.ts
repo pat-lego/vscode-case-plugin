@@ -5,10 +5,11 @@ import * as fs from 'fs';
 
 vi.mock('vscode', () => import('./__mocks__/vscode'));
 
-// Mock the `ws` package so WebSocket.WebSocket.OPEN resolves to 1.
+// Mock the `ws` package so the default-exported WebSocket class has static
+// readyState constants (WebSocket.OPEN, etc.), matching the real module's shape.
 vi.mock('ws', () => {
   const WS = { OPEN: 1, CONNECTING: 0, CLOSING: 2, CLOSED: 3 };
-  const WebSocketClass = Object.assign(function () {}, WS, { WebSocket: WS });
+  const WebSocketClass = Object.assign(function () {}, WS);
   return {
     default: WebSocketClass,
     WebSocketServer: vi.fn().mockReturnValue({ on: vi.fn(), close: vi.fn() }),
