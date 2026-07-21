@@ -4,7 +4,8 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { analyzeCdnCacheMisses, analyzeCdnEntries, analyzeCdnText, analyzeCdnFile } from '../../src/cdn/analyzer';
 import { CdnAnalysisInput, CdnFetchOptions, SplunkRunner } from '../../src/cdn/types';
-import { botColdPopEntries, uniqueUrlBurstEntries, toRaw } from './helpers';
+import { CnameResolver } from '../../src/cdn/upstream-cdn';
+import { botColdPopEntries, uniqueUrlBurstEntries, cloudBurstEntries, toRaw } from './helpers';
 
 const INPUT: CdnAnalysisInput = {
   service: 'cm-p53812-e590634',
@@ -20,8 +21,12 @@ const baselineJson = JSON.stringify([
   { server_datacenter: 'XYZ', count: '50' }
 ]);
 
+// No-CNAME fake resolver — keeps these tests off the network and deterministic; the DNS
+// cross-check itself is covered separately in upstream-cdn.test.ts and classifier.test.ts.
+const noCname: CnameResolver = async () => { throw new Error('no CNAME record'); };
+
 function makeOpts(runner: SplunkRunner, extra: Partial<CdnFetchOptions> = {}): CdnFetchOptions {
-  return { index: 'dx_aem_engineering', sourcetype: 'cdn', runner, ...extra };
+  return { index: 'dx_aem_engineering', sourcetype: 'cdn', runner, resolveCname: noCname, ...extra };
 }
 
 describe('analyzeCdnCacheMisses — end to end (mock runner)', () => {
@@ -87,20 +92,42 @@ describe('analyzeCdnEntries — pure path', () => {
 });
 
 describe('analyzeCdnText — offline pasted export', () => {
-  it('analyses NDJSON (streaming result lines)', () => {
+  it('analyses NDJSON (streaming result lines)', async () => {
     const ndjson = uniqueUrlBurstEntries(200)
       .map(e => JSON.stringify({ preview: false, result: toRaw(e) }))
       .join('\n');
-    const report = analyzeCdnText(ndjson, INPUT);
+    const report = await analyzeCdnText(ndjson, INPUT, undefined, noCname);
     expect(report.entryCount).toBe(200);
     expect(report.verdictId).toBe('cdn-unique-url-burst');
   });
 
-  it('analyses a JSON array export', () => {
+  it('analyses a JSON array export', async () => {
     const arr = JSON.stringify(uniqueUrlBurstEntries(120).map(toRaw));
-    const report = analyzeCdnText(arr, INPUT);
+    const report = await analyzeCdnText(arr, INPUT, undefined, noCname);
     expect(report.entryCount).toBe(120);
     expect(report.verdictId).toBe('cdn-unique-url-burst');
+  });
+});
+
+describe('analyzeCdnText — upstream-CDN DDoS false positive', () => {
+  // Reproduces a real incident: www.macnica.com is fronted by Akamai (CNAME -> ...edgekey.net),
+  // so origin-fetch traffic from Akamai's ASN is expected, not a botnet — the classifier must
+  // rule this out once DNS confirms Akamai is the origin's own CDN, per the same shape of burst
+  // `cloudBurstEntries()` already uses to exercise the (still-valid) genuine cloud-ASN case.
+  const macnicaEntries = () => cloudBurstEntries().map(e => ({ ...e, originHost: 'www.macnica.com' }));
+  const akamaiDns: CnameResolver = async host =>
+    host === 'www.macnica.com' ? ['www.macnica.com.edgekey.net'] : Promise.reject(new Error('no CNAME record'));
+
+  it('suppresses the DDoS finding when the flagged ASN matches the origin\'s own DNS-confirmed CDN', async () => {
+    const report = await analyzeCdnText(JSON.stringify(macnicaEntries().map(toRaw)), INPUT, undefined, akamaiDns);
+    expect(report.findings.find(f => f.signatureId === 'cdn-ddos-pattern')).toBeUndefined();
+  });
+
+  it('still flags the burst when DNS does not confirm a matching upstream CDN', async () => {
+    const report = await analyzeCdnText(JSON.stringify(macnicaEntries().map(toRaw)), INPUT, undefined, noCname);
+    const f = report.findings.find(fnd => fnd.signatureId === 'cdn-ddos-pattern');
+    expect(f).toBeDefined();
+    expect(f!.evidence.join(' ').toLowerCase()).toContain('akamai');
   });
 });
 
@@ -112,7 +139,7 @@ describe('analyzeCdnFile — offline saved export', () => {
       .join('\n');
     writeFileSync(file, ndjson, 'utf-8');
     try {
-      const report = await analyzeCdnFile(file, INPUT); // no baseline offline -> in-window rarity
+      const report = await analyzeCdnFile(file, INPUT, undefined, noCname); // no baseline offline -> in-window rarity
       expect(report.entryCount).toBe(150);
       expect(report.metrics.botMissShare).toBe(1);
     } finally {
@@ -124,7 +151,7 @@ describe('analyzeCdnFile — offline saved export', () => {
     const file = path.join(tmpdir(), `cdn-array-${Date.now()}.json`);
     writeFileSync(file, JSON.stringify(uniqueUrlBurstEntries(80).map(toRaw)), 'utf-8');
     try {
-      const report = await analyzeCdnFile(file, INPUT);
+      const report = await analyzeCdnFile(file, INPUT, undefined, noCname);
       expect(report.entryCount).toBe(80);
       expect(report.verdictId).toBe('cdn-unique-url-burst');
     } finally {

@@ -4,6 +4,7 @@ import { classifyCacheMiss, build429Context, buildPass200Finding, buildPassError
 import { parseCdnLogs } from './parser';
 import { buildIncidentQuery, buildBaselineQuery } from './query-builder';
 import { streamCdnLogs, streamCdnFile, fetchCdnLogs, fetchPopBaseline } from './fetcher';
+import { resolveUpstreamCdn, CnameResolver, UpstreamCdnMatch } from './upstream-cdn';
 
 const DEFAULT_MAX_EVENTS = 100000;
 
@@ -11,38 +12,65 @@ const DEFAULT_MAX_EVENTS = 100000;
  * Pure analysis over already-fetched CDN events: aggregate metrics, classify the MISS cause, and
  * assemble a report. Useful when the log data is already in hand (a mocked runner, a pasted/
  * captured export). Pass a {@link PopBaseline} to define POP rarity from history.
+ *
+ * No DNS lookup happens here (this function does no I/O) — pass an already-resolved
+ * `upstreamCdn` (see {@link resolveUpstreamCdn}) if the cloud-ASN-vs-origin's-own-CDN cross-check
+ * should be applied. The other `analyzeCdn*` entry points resolve it automatically.
  */
 export function analyzeCdnEntries(
   entries: CdnLogEntry[],
   input: CdnAnalysisInput,
-  baseline?: PopBaseline
+  baseline?: PopBaseline,
+  upstreamCdn?: UpstreamCdnMatch | null
 ): CdnAnalysisReport {
-  return assembleReport(computeCdnMetrics(entries, baseline), input, entries.length);
+  return assembleReport(computeCdnMetrics(entries, baseline), input, entries.length, [], upstreamCdn);
 }
 
 /**
  * Analyses an already-captured CDN export **pasted as text** — the raw `sky splunk query` output
  * (JSON array or NDJSON) or the human-readable KV `_raw` block. No Splunk round-trip; POP rarity
- * uses the in-window heuristic (no historical baseline is available offline).
+ * uses the in-window heuristic (no historical baseline is available offline). The origin hostname
+ * seen in the data is cross-referenced against a live DNS lookup (see {@link resolveUpstreamCdn})
+ * to rule out the origin's own CDN being mistaken for a DDoS source; DNS failures are non-fatal.
+ * `resolveCname` is injectable (defaults to `dns.promises.resolveCname`) — pass a fake in tests.
  */
-export function analyzeCdnText(rawText: string, input: CdnAnalysisInput, baseline?: PopBaseline): CdnAnalysisReport {
-  return analyzeCdnEntries(parseCdnLogs(rawText), input, baseline);
+export async function analyzeCdnText(
+  rawText: string,
+  input: CdnAnalysisInput,
+  baseline?: PopBaseline,
+  resolveCname?: CnameResolver
+): Promise<CdnAnalysisReport> {
+  const entries = parseCdnLogs(rawText);
+  const metrics = computeCdnMetrics(entries, baseline);
+  const upstreamCdn = await tryResolveUpstreamCdn(metrics.topOriginHost, metrics.warnings, resolveCname);
+  return assembleReport(metrics, input, entries.length, [], upstreamCdn);
 }
 
 /**
  * Analyses a saved CDN export **file**, streaming NDJSON line-by-line so large exports stay
  * memory-bounded. Falls back to whole-file parsing when the file is a JSON array / KV block.
+ * Cross-references the origin hostname against DNS, as {@link analyzeCdnText} does.
  */
-export async function analyzeCdnFile(filePath: string, input: CdnAnalysisInput, baseline?: PopBaseline): Promise<CdnAnalysisReport> {
+export async function analyzeCdnFile(
+  filePath: string,
+  input: CdnAnalysisInput,
+  baseline?: PopBaseline,
+  resolveCname?: CnameResolver
+): Promise<CdnAnalysisReport> {
   const agg = new CdnAggregator();
   const count = await streamCdnFile(filePath, entry => agg.add(entry));
   if (count > 0) {
-    return assembleReport(agg.finalize(baseline), input, count);
+    const metrics = agg.finalize(baseline);
+    const upstreamCdn = await tryResolveUpstreamCdn(metrics.topOriginHost, metrics.warnings, resolveCname);
+    return assembleReport(metrics, input, count, [], upstreamCdn);
   }
   // Not NDJSON — read the whole file and parse as an array / KV block.
   const fs = await import('fs');
   const raw = fs.readFileSync(filePath, 'utf-8');
-  return analyzeCdnEntries(parseCdnLogs(raw), input, baseline);
+  const entries = parseCdnLogs(raw);
+  const metrics = computeCdnMetrics(entries, baseline);
+  const upstreamCdn = await tryResolveUpstreamCdn(metrics.topOriginHost, metrics.warnings, resolveCname);
+  return assembleReport(metrics, input, entries.length, [], upstreamCdn);
 }
 
 /**
@@ -94,17 +122,45 @@ export async function analyzeCdnCacheMisses(
     }
   }
 
-  const report = assembleReport(finalize(baseline), input, entryCount, splunkQueries);
+  const metrics = finalize(baseline);
+  const upstreamCdn = await tryResolveUpstreamCdn(metrics.topOriginHost, metrics.warnings, opts.resolveCname);
+  const report = assembleReport(metrics, input, entryCount, splunkQueries, upstreamCdn);
   report.metrics.warnings.unshift(...preWarnings);
   return report;
 }
 
 // ── Internals ─────────────────────────────────────────────────────────────────
 
-function assembleReport(metrics: CdnMetrics, input: CdnAnalysisInput, entryCount: number, splunkQueries: string[] = []): CdnAnalysisReport {
-  const hypotheses = classifyCacheMiss(metrics);
+/**
+ * Best-effort DNS cross-check for a burst's cloud-ASN signal: resolves `hostname`'s CNAME chain
+ * looking for a known CDN delegation (see {@link resolveUpstreamCdn}). Never throws — a DNS
+ * failure (offline, no network egress from this host, NXDOMAIN, ...) just means the cross-check
+ * is skipped and a warning is recorded, exactly like the POP baseline's non-fatal failure handling.
+ */
+async function tryResolveUpstreamCdn(
+  hostname: string,
+  warnings: string[],
+  resolveCname?: CnameResolver
+): Promise<UpstreamCdnMatch | null> {
+  if (!hostname) return null;
+  try {
+    return await resolveUpstreamCdn(hostname, resolveCname);
+  } catch (err) {
+    warnings.push(`Upstream-CDN DNS cross-check for ${hostname} failed (${errMsg(err)}) — cloud-ASN traffic was not cross-referenced against the origin's own CDN.`);
+    return null;
+  }
+}
+
+function assembleReport(
+  metrics: CdnMetrics,
+  input: CdnAnalysisInput,
+  entryCount: number,
+  splunkQueries: string[] = [],
+  upstreamCdn?: UpstreamCdnMatch | null
+): CdnAnalysisReport {
+  const hypotheses = classifyCacheMiss(metrics, upstreamCdn);
   const context = [
-    buildDdosFinding(metrics),
+    buildDdosFinding(metrics, upstreamCdn),
     buildTtlRecommendation(metrics),
     build429Context(metrics),
     buildPass200Finding(metrics),

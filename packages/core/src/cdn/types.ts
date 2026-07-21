@@ -1,4 +1,5 @@
 import { Finding } from '../types/finding';
+import { CnameResolver } from './upstream-cdn';
 
 /**
  * CDN cache-miss analysis module.
@@ -64,6 +65,11 @@ export interface CdnFetchOptions {
   runner?: SplunkRunner;
   /** If set, the streaming fetch writes the raw incident response (NDJSON) to this file for later offline replay. */
   saveRawPath?: string;
+  /**
+   * Injectable CNAME resolver for the origin's-own-CDN DNS cross-check (see `resolveUpstreamCdn`).
+   * Defaults to `dns.promises.resolveCname`. Inject a fake in tests to avoid a real DNS lookup.
+   */
+  resolveCname?: CnameResolver;
 }
 
 // ── Parsed log entry ────────────────────────────────────────────────────────────
@@ -136,6 +142,25 @@ export interface CdnLogEntry {
   geoCountryCode: string;
   /** AEM service id (`aem_service`). */
   aemService: string;
+  /**
+   * The origin hostname this request was ultimately for (`origin_host`), e.g. "www.macnica.com".
+   * Used to cross-reference a flagged "cloud/hosting ASN" against the site's OWN CDN (via DNS) —
+   * see {@link resolveUpstreamCdn} — before treating that ASN as a DDoS signal.
+   */
+  originHost: string;
+  /**
+   * The `X-Forwarded-For` chain as originally received (`original_x_forwarded_for`), e.g.
+   * "135.132.91.21, 23.52.12.49" — real end-user IP(s) followed by the forwarding CDN's own edge
+   * IP. Proves a request attributed to a CDN's ASN is that CDN forwarding a real visitor, not the
+   * visitor itself, when the last hop matches {@link clientIp}.
+   */
+  originalXForwardedFor: string;
+  /**
+   * The HTTP `Via` header as received (nested under `xdata.request_via` in this feed's raw JSON),
+   * e.g. "1.1 akamai.net(ghost) (AkamaiGHost)" — names the forwarding CDN's own software,
+   * corroborating {@link originalXForwardedFor}.
+   */
+  requestVia: string;
   /** Request start time (`time_start`), when parseable. */
   timeStart?: Date;
   /** The original untyped key/value record, for evidence and debugging. */
@@ -153,6 +178,19 @@ export interface PopBaseline {
 }
 
 // ── Metrics (flat scalar summary) ───────────────────────────────────────────────
+
+/**
+ * A concrete example proving an ASN's traffic is a CDN forwarding a real visitor, not the visitor
+ * itself — found when an entry's {@link CdnLogEntry.originalXForwardedFor} chain has more than one
+ * hop and the last one matches {@link CdnLogEntry.clientIp} (i.e. this ASN's own edge is the most
+ * recent hop, with a real client IP ahead of it).
+ */
+export interface AsnForwardedSample {
+  /** The real end-user IP found ahead of this ASN's own edge IP in the X-Forwarded-For chain. */
+  realClientIp: string;
+  /** The HTTP Via header value naming the forwarding software (e.g. "1.1 akamai.net(ghost) (AkamaiGHost)"), when present. */
+  via: string;
+}
 
 /**
  * Aggregated CDN metrics. Scalar fields are the signals the classifier thresholds against;
@@ -232,6 +270,17 @@ export interface CdnMetrics {
   repeatSamePopMissCount: number;
   /** repeatSamePopMissCount / missCount — the genuinely suspicious share. */
   repeatSamePopShare: number;
+  /**
+   * Peak-vs-mean concentration of "first fetch of this URL at this POP" timestamps — the same
+   * technique as the DDoS burst ratio, applied to cold-POP fetches. High (spiky) means the cold
+   * fetches cluster in a narrow time band: the signature of a synchronized invalidation (a
+   * deploy, a dispatcher/CDN purge), not organic per-POP traffic diversity. ~1 (flat) means they
+   * are spread through the window, consistent with genuinely diverse cold POPs — though a short
+   * window can also produce a flat-but-still-high coldPopFirstFetchShare simply because there
+   * wasn't enough time to observe repeats; re-run over a longer window to tell those apart. 0 when
+   * there is no timed cold-fetch data.
+   */
+  coldFetchBurstRatio: number;
 
   // ── Staleness / TTL ───────────────────────────────────────────────────────────
   /** MISS events whose responseTtl is > 0 but below the short-TTL threshold. */
@@ -262,6 +311,15 @@ export interface CdnMetrics {
   observedMaxAgeSeconds: number;
   /** Recommended TTL (seconds) so the shield serves ~90% of repeat requests before expiry; 0 if insufficient data. */
   recommendedTtlSeconds: number;
+  /** Observed origin stale-while-revalidate on cacheable MISSes, 0 if none seen. */
+  observedSwrSeconds: number;
+  /**
+   * Recommended stale-while-revalidate (seconds), sized to the PER-POP gap — unlike `recommendedTtlSeconds`
+   * this works at the edge WITHOUT a shield: once a POP has a copy, it can serve it stale (and
+   * revalidate in the background) instead of blocking on origin the next time it goes stale.
+   * 0 if insufficient data.
+   */
+  recommendedSwrSeconds: number;
   /** 1 if there were enough repeat-request timestamps to make a TTL recommendation, else 0. */
   ttlDataSufficient: number;
 
@@ -307,7 +365,9 @@ export interface CdnMetrics {
   /** Share of requests the CDN already flagged (ddos_action / ddos_rule / malicious_flags / deny_reason). */
   cdnThreatShare: number;
   /** Top source ASNs by request volume (evidence), with a cloud/hosting flag. */
-  topSourceAsns: Array<{ asn: string; name: string; count: number; cloud: boolean }>;
+  topSourceAsns: Array<{ asn: string; name: string; count: number; cloud: boolean; forwardedSample?: AsnForwardedSample }>;
+  /** Most common non-blank `origin_host` seen — the hostname DNS-cross-referenced for a known upstream CDN. */
+  topOriginHost: string;
   /** Distinct client IPs among ALL requests. */
   distinctClientIpCount: number;
   /** Busiest single client IP's share of ALL requests — corroborates a DDoS/scripted-traffic burst. */
@@ -366,7 +426,7 @@ export interface CdnMetrics {
   topMissUrls: Array<{ url: string; count: number; pops: number }>;
   popMissBreakdown: Array<{ pop: string; count: number; share: number; rare: boolean }>;
   topBots: Array<{ bot: string; count: number }>;
-  topAsns: Array<{ asn: string; name: string; count: number }>;
+  topAsns: Array<{ asn: string; name: string; count: number; forwardedSample?: AsnForwardedSample }>;
   /** Non-fatal issues encountered while fetching / computing (missing fields, baseline failure). */
   warnings: string[];
 }

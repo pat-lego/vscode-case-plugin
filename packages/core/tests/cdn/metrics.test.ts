@@ -141,6 +141,39 @@ describe('computeCdnMetrics — POP fragmentation', () => {
   });
 });
 
+describe('computeCdnMetrics — coldFetchBurstRatio (invalidation vs organic diversity)', () => {
+  it('is high when every cold-POP first-fetch lands in the same instant (a synchronized invalidation)', () => {
+    const t0 = Date.parse('2026-07-16T03:40:00Z');
+    const pops = ['BMA', 'FRA', 'LHR'];
+    const entries = [];
+    // 60 distinct (url,pop) first-fetches, all at t0.
+    for (let u = 0; u < 20; u++) {
+      for (const pop of pops) {
+        entries.push(makeEntry({ url: `/article/${u}`, pop, cacheStatus: 'MISS', timeStart: new Date(t0) }));
+      }
+    }
+    // One more request 60s later to establish a window (and a low mean rate by comparison).
+    entries.push(makeEntry({ url: '/article/0', pop: 'BMA', cacheStatus: 'MISS', timeStart: new Date(t0 + 60000) }));
+    const m = computeCdnMetrics(entries);
+    expect(m.coldFetchBurstRatio).toBeGreaterThan(10);
+  });
+
+  it('is ~1 when cold-POP first-fetches are spread evenly through the window (organic diversity)', () => {
+    const t0 = Date.parse('2026-07-16T03:40:00Z');
+    const pops = ['BMA', 'FRA', 'LHR'];
+    const entries = [];
+    let i = 0;
+    for (let u = 0; u < 20; u++) {
+      for (const pop of pops) {
+        entries.push(makeEntry({ url: `/article/${u}`, pop, cacheStatus: 'MISS', timeStart: new Date(t0 + i * 1000) }));
+        i++;
+      }
+    }
+    const m = computeCdnMetrics(entries);
+    expect(m.coldFetchBurstRatio).toBeLessThan(2);
+  });
+});
+
 // ── Bots + rare POP (baseline vs in-window) ───────────────────────────────────────
 
 describe('computeCdnMetrics — bot cold POP with baseline', () => {
@@ -246,6 +279,41 @@ describe('computeCdnMetrics — DDoS / traffic-source signals', () => {
     const m = computeCdnMetrics(entries);
     expect(m.cloudAsnRequestShare).toBe(0);
   });
+
+  it('attaches a forwarded-request sample to an ASN whose XFF chain ends at its own client IP', () => {
+    const entries = cloudBurstEntries().map(e => ({
+      ...e,
+      clientIp: '23.52.12.49',
+      originalXForwardedFor: '135.132.91.21, 23.52.12.49',
+      requestVia: '1.1 akamai.net(ghost) (AkamaiGHost)'
+    }));
+    const m = computeCdnMetrics(entries);
+    const asn = m.topSourceAsns.find(a => a.asn === '20940');
+    expect(asn?.forwardedSample).toEqual({ realClientIp: '135.132.91.21', via: '1.1 akamai.net(ghost) (AkamaiGHost)' });
+  });
+
+  it('does not attach a forwarded-request sample without a multi-hop XFF chain ending at the client IP', () => {
+    // Single-hop XFF (no real client ahead of it) and a mismatched last hop both should not count.
+    const noChain = computeCdnMetrics(cloudBurstEntries().map(e => ({ ...e, originalXForwardedFor: '23.52.12.49' })));
+    expect(noChain.topSourceAsns[0]?.forwardedSample).toBeUndefined();
+
+    const mismatchedLastHop = computeCdnMetrics(cloudBurstEntries().map(e => ({
+      ...e, clientIp: '23.52.12.49', originalXForwardedFor: '135.132.91.21, 9.9.9.9'
+    })));
+    expect(mismatchedLastHop.topSourceAsns[0]?.forwardedSample).toBeUndefined();
+  });
+
+  it('tracks the most common origin_host, for the upstream-CDN DNS cross-check', () => {
+    const entries = uniqueUrlBurstEntries(10).map(e => ({ ...e, originHost: 'www.macnica.com' }));
+    const m = computeCdnMetrics(entries);
+    expect(m.topOriginHost).toBe('www.macnica.com');
+  });
+
+  it('leaves topOriginHost blank when no entry carries one', () => {
+    const entries = uniqueUrlBurstEntries(5).map(e => ({ ...e, originHost: '' }));
+    const m = computeCdnMetrics(entries);
+    expect(m.topOriginHost).toBe('');
+  });
 });
 
 describe('computeCdnMetrics — TTL sizing', () => {
@@ -262,6 +330,31 @@ describe('computeCdnMetrics — TTL sizing', () => {
     expect(m.p90AggGapSeconds).toBeCloseTo(120, 0);
     expect(m.observedMaxAgeSeconds).toBe(60);
     expect(m.recommendedTtlSeconds).toBe(300); // niceTtl(120)
+  });
+
+  it('recommends a generous stale-while-revalidate floor (1 week) rather than sizing tightly to the gap', () => {
+    const base = Date.parse('2026-07-16T03:40:00Z');
+    const entries = [];
+    for (let u = 0; u < 12; u++) {
+      entries.push(makeEntry({ url: `/u${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchCacheControl: 'max-age=60', timeStart: new Date(base) }));
+      entries.push(makeEntry({ url: `/u${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchCacheControl: 'max-age=60', timeStart: new Date(base + 120000) }));
+    }
+    const m = computeCdnMetrics(entries);
+    expect(m.observedSwrSeconds).toBe(0); // no stale-while-revalidate directive was present
+    expect(m.recommendedSwrSeconds).toBe(604800); // the floor — the 120s gap alone would only need niceTtl(120)=300
+  });
+
+  it('floors the recommended SWR at the current value when it already exceeds the default floor', () => {
+    const base = Date.parse('2026-07-16T03:40:00Z');
+    const twoWeeks = 14 * 86400;
+    const entries = [];
+    for (let u = 0; u < 12; u++) {
+      entries.push(makeEntry({ url: `/u${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchSurrogateControl: `max-age=60,stale-while-revalidate=${twoWeeks}`, timeStart: new Date(base) }));
+      entries.push(makeEntry({ url: `/u${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchSurrogateControl: `max-age=60,stale-while-revalidate=${twoWeeks}`, timeStart: new Date(base + 120000) }));
+    }
+    const m = computeCdnMetrics(entries);
+    expect(m.observedSwrSeconds).toBe(twoWeeks);
+    expect(m.recommendedSwrSeconds).toBe(twoWeeks); // never suggest shortening it, even below the default floor
   });
 });
 

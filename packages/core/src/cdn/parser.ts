@@ -117,9 +117,11 @@ function normalizeRow(row: unknown): Record<string, string> | null {
 
   const rec: Record<string, string> = {};
 
-  // Merge fields carried inside `_raw` first, so explicit columns win over them.
+  // Merge fields carried inside `_raw` first, so explicit columns win over them. `_raw` is either
+  // the human-readable `key: value` block Splunk renders, or — for JSON-formatted log sources
+  // (e.g. this Fastly/Skyline feed) — the original event re-encoded as a JSON object string.
   if (typeof obj._raw === 'string') {
-    Object.assign(rec, parseKvBlock(obj._raw));
+    Object.assign(rec, parseRawField(obj._raw));
   }
 
   for (const [k, v] of Object.entries(obj)) {
@@ -128,6 +130,49 @@ function normalizeRow(row: unknown): Record<string, string> | null {
     rec[k] = typeof v === 'string' ? v : String(v);
   }
 
+  return rec;
+}
+
+/**
+ * Parses a Splunk `_raw` field, which is either a JSON object (common for JSON-formatted log
+ * sources — the whole event re-encoded as a single-line JSON string) or the human-readable
+ * multi-line `key: value` block Splunk renders otherwise. Tries JSON first since a KV-block parse
+ * of compact JSON text would find no `key: value` lines and silently return nothing.
+ */
+export function parseRawField(raw: string): Record<string, string> {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return flattenJson(parsed as Record<string, unknown>);
+      }
+    } catch {
+      // Not actually JSON (e.g. a KV block that happens to start with the `{ [-]` collapse
+      // marker) — fall through to KV parsing below.
+    }
+  }
+  return parseKvBlock(raw);
+}
+
+/**
+ * Flattens a JSON object to a flat string/string record, dot-joining nested object keys (e.g.
+ * `{ xdata: { request_via: "..." } }` becomes `{ "xdata.request_via": "..." }`) so nested fields
+ * (this feed nests a handful of fields, e.g. under `xdata`) survive instead of being lost to a
+ * `[object Object]` stringification. Arrays are stringified as-is (none of the fields this module
+ * reasons over are arrays).
+ */
+function flattenJson(obj: Record<string, unknown>, prefix = ''): Record<string, string> {
+  const rec: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === null || v === undefined) continue;
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      Object.assign(rec, flattenJson(v as Record<string, unknown>, key));
+    } else {
+      rec[key] = typeof v === 'string' ? v : String(v);
+    }
+  }
   return rec;
 }
 
@@ -182,6 +227,9 @@ function toEntry(rec: Record<string, string>): CdnLogEntry {
     denyReason: (rec.deny_reason ?? '').trim(),
     geoCountryCode: (rec.geo_country_code ?? '').trim(),
     aemService: (rec.aem_service ?? '').trim(),
+    originHost: (rec.origin_host ?? '').trim(),
+    originalXForwardedFor: (rec.original_x_forwarded_for ?? '').trim(),
+    requestVia: (rec['xdata.request_via'] ?? rec.request_via ?? '').trim(),
     timeStart: toDate(rec.time_start),
     raw: rec
   };

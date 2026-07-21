@@ -81,9 +81,9 @@ export class CdnAnalysisService {
   }
 
   /** Analyses a pasted CDN export (raw `sky splunk query` JSON/NDJSON or KV block) — no Splunk call. */
-  analyzeText(rawText: string, input: CdnAnalysisInput): CdnAnalysisReport {
+  async analyzeText(rawText: string, input: CdnAnalysisInput): Promise<CdnAnalysisReport> {
     this.log.info('cdn', 'analyze pasted export', { bytes: rawText.length, tier: input.tier ?? 'publish' });
-    const report = analyzeCdnText(rawText, input);
+    const report = await analyzeCdnText(rawText, input);
     this.log.info('cdn', 'analyze pasted done', { events: report.entryCount, verdict: report.verdictId ?? null });
     return report;
   }

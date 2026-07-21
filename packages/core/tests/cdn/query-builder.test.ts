@@ -52,6 +52,18 @@ describe('buildIncidentQuery', () => {
     const noUrls = buildIncidentQuery({ ...INPUT, urls: [] }, OPTS);
     expect(noUrls).not.toContain('url=');
   });
+
+  it('sorts the FULL result set chronologically before fields/head — order matters for cold-fetch/burst timing', () => {
+    // `sort 0` (not bare `sort`) is required: `sort`'s default cap is only the first 10,000 rows,
+    // which would silently leave the tail of a large maxEvents result unsorted.
+    expect(spl).toContain('| sort 0 +_time |');
+    const sortIdx = spl.indexOf('| sort 0 +_time');
+    const fieldsIdx = spl.indexOf('| fields');
+    const headIdx = spl.indexOf('| head');
+    expect(sortIdx).toBeGreaterThan(-1);
+    expect(sortIdx).toBeLessThan(fieldsIdx);
+    expect(fieldsIdx).toBeLessThan(headIdx);
+  });
 });
 
 describe('buildIncidentQuery — tier + optional sourcetype', () => {

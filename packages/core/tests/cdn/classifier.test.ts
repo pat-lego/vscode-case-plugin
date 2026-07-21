@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeCdnMetrics } from '../../src/cdn/metrics';
 import { classifyCacheMiss, build429Context, buildPass200Finding, buildPassErrorFinding, buildTtlRecommendation, buildDdosFinding } from '../../src/cdn/classifier';
+import { UpstreamCdnMatch } from '../../src/cdn/upstream-cdn';
 import {
   makeEntry,
   uniqueUrlBurstEntries,
@@ -76,6 +77,153 @@ describe('classifyCacheMiss — POP fragmentation + shielding', () => {
     const f = topFinding(entries);
     expect(f.signatureId).toBe('cdn-pop-fragmentation');
     expect(f.evidence.join(' ')).toMatch(/shielding is ON/i);
+  });
+
+  it('offers remediation beyond shielding: stale-while-revalidate and cache warming', () => {
+    const f = topFinding(popFragmentationEntries(30, pops));
+    expect(f.signatureId).toBe('cdn-pop-fragmentation');
+    const steps = f.nextSteps.join(' ');
+    expect(steps).toMatch(/stale-while-revalidate/i);
+    expect(steps).toMatch(/pre-warm/i);
+    expect(steps).toMatch(/not available or not easy to turn on/i);
+    expect(f.relatedSignatures).toContain('cdn-ttl-recommendation');
+  });
+
+  it('surfaces the repeat-same-POP share as the specifically SWR-fixable portion', () => {
+    // Mostly genuine cold first-fetches per POP, plus a few re-fetches of a URL already cached
+    // at that SAME POP (repeatSamePopShare > 0) — the share stale-while-revalidate alone can fix.
+    const entries = [
+      ...popFragmentationEntries(30, pops),
+      ...Array.from({ length: 10 }, (_, u) => makeEntry({ url: `/article/${u}`, pop: 'BMA', responseTtl: 3600 }))
+    ];
+    const f = topFinding(entries);
+    expect(f.signatureId).toBe('cdn-pop-fragmentation');
+    expect(f.evidence.join(' ')).toMatch(/already cached at that SAME POP before going stale/i);
+  });
+
+  it('flags a clustered cold-fetch burst as a likely invalidation event, not a caching-architecture problem', () => {
+    const t0 = Date.parse('2026-07-16T03:40:00Z');
+    const entries = [];
+    for (let u = 0; u < 20; u++) {
+      for (const pop of pops) {
+        entries.push(makeEntry({ url: `/article/${u}`, pop, cacheStatus: 'MISS', timeStart: new Date(t0) }));
+      }
+    }
+    entries.push(makeEntry({ url: '/article/0', pop: 'BMA', cacheStatus: 'MISS', timeStart: new Date(t0 + 60000) }));
+    const f = topFinding(entries);
+    expect(f.signatureId).toBe('cdn-pop-fragmentation');
+    expect(f.evidence.join(' ')).toMatch(/clustered in time.*synchronized invalidation/i);
+    expect(f.nextSteps.join(' ')).toMatch(/deploy\/purge event/i);
+    // The ratio itself must be visible in "Signals matched" (matchedConditions), not just prose.
+    const cond = f.matchedConditions.find(c => c.field === 'coldFetchBurstRatio');
+    expect(cond).toBeDefined();
+    expect(String(cond!.observedValue)).toMatch(/^\d+\.\d×$/);
+  });
+
+  it('does not let the informational coldFetchBurstRatio condition dilute the confidence score', () => {
+    // 5/5 scored conditions match here (see the "5/5 high" test above); the informational
+    // condition must not silently become a 6th vote and drag the score down to 5/6.
+    const f = topFinding(popFragmentationEntries(30, pops));
+    expect(f.confidenceScore).toBe(1);
+  });
+
+  it('reads a diffuse cold-fetch spread as organic per-POP traffic, not an invalidation event', () => {
+    const t0 = Date.parse('2026-07-16T03:40:00Z');
+    const entries = [];
+    let i = 0;
+    for (let u = 0; u < 20; u++) {
+      for (const pop of pops) {
+        entries.push(makeEntry({ url: `/article/${u}`, pop, cacheStatus: 'MISS', timeStart: new Date(t0 + i * 1000) }));
+        i++;
+      }
+    }
+    const f = topFinding(entries);
+    expect(f.signatureId).toBe('cdn-pop-fragmentation');
+    expect(f.evidence.join(' ')).toMatch(/spread through the window.*organic per-POP traffic diversity/i);
+  });
+
+  it('warns that a short window with mostly single-shot URLs cannot yield a trustworthy fragmentation share', () => {
+    // Every MISSed URL requested exactly once — no repeat opportunity at all in this window.
+    const entries = pops.flatMap(pop =>
+      Array.from({ length: 10 }, (_, u) => makeEntry({ url: `/x-${pop}-${u}`, pop, cacheStatus: 'MISS' }))
+    );
+    const m = computeCdnMetrics(entries);
+    expect(m.singleRequestMissUrlShare).toBe(1);
+    const findings = classifyCacheMiss(m);
+    const f = findings.find(fnd => fnd.signatureId === 'cdn-pop-fragmentation');
+    expect(f?.evidence.join(' ')).toMatch(/requested only once in this window.*cannot be told apart/i);
+  });
+
+  it('shows decimal precision instead of a misleading 100%/0% when a share is merely close to the boundary', () => {
+    // 2000 cold first-fetches + 1 same-POP repeat -> coldPopFirstFetchShare = 2000/2001 = 99.950...%,
+    // repeatSamePopShare = 1/2001 = 0.0499...% — neither is exactly 100% or 0%, and must not print as such.
+    const entries = [
+      ...popFragmentationEntries(500, pops),
+      makeEntry({ url: '/article/0', pop: 'BMA', cacheStatus: 'MISS' })
+    ];
+    const f = topFinding(entries);
+    expect(f.signatureId).toBe('cdn-pop-fragmentation');
+    const evidence = f.evidence.join(' ');
+    expect(evidence).toMatch(/99\.95\d?%/);
+    expect(evidence).not.toMatch(/100% of MISSes are the first fetch/);
+    expect(evidence).toMatch(/0\.0[45]%/);
+    expect(evidence).not.toMatch(/0% of MISSes were already cached/);
+  });
+
+  it('still prints a plain whole-number percentage for an exact 100%/0% (a real, not rounded, boundary)', () => {
+    const f = topFinding(popFragmentationEntries(30, pops)); // every MISS is a genuine cold first-fetch
+    expect(f.evidence.join(' ')).toMatch(/100% of MISSes are the first fetch/);
+  });
+});
+
+describe('cdn-bot-cold-pop — distinguishing a forwarding CDN from a bot/attacker', () => {
+  const upstreamAkamai: UpstreamCdnMatch = {
+    hostname: 'www.macnica.com',
+    chain: ['www.macnica.com.edgekey.net'],
+    provider: 'akamai'
+  };
+
+  function findBotColdPop(entries: ReturnType<typeof botColdPopEntries>, upstreamCdn?: UpstreamCdnMatch | null) {
+    const m = computeCdnMetrics(entries, baselineWithColdPop('XYZ'));
+    return classifyCacheMiss(m, upstreamCdn).find(f => f.signatureId === 'cdn-bot-cold-pop');
+  }
+
+  it('explains a top ASN verified via DNS AND its own forwarding headers, instead of a bare count', () => {
+    const entries = [
+      ...botColdPopEntries(50, 3, 'XYZ'),
+      ...Array.from({ length: 80 }, (_, i) => makeEntry({
+        url: `/page${i}`, pop: 'BMA',
+        clientIp: '23.52.12.49', clientAsNumber: '20940', clientAsName: 'akamai international b.v.',
+        originalXForwardedFor: '135.132.91.21, 23.52.12.49', requestVia: '1.1 akamai.net(ghost) (AkamaiGHost)'
+      }))
+    ];
+    const f = findBotColdPop(entries, upstreamAkamai)!;
+    const evidence = f.evidence.join(' ');
+    expect(evidence).toMatch(/AS20940 akamai international b\.v\. looks like this origin's own CDN forwarding real visitor traffic, not a bot or attack source/);
+    expect(evidence).toMatch(/DNS confirms this origin is fronted by akamai/);
+    expect(evidence).toMatch(/real end-user IP \(135\.132\.91\.21\)/);
+    expect(evidence).toMatch(/Via: 1\.1 akamai\.net\(ghost\) \(AkamaiGHost\)/);
+  });
+
+  it('still flags a forwarding-looking ASN from its headers alone, with no DNS match at all', () => {
+    const entries = [
+      ...botColdPopEntries(50, 3, 'XYZ'),
+      ...Array.from({ length: 80 }, (_, i) => makeEntry({
+        url: `/page${i}`, pop: 'BMA',
+        clientIp: '52.1.2.3', clientAsNumber: '54994', clientAsName: 'meteverse limited.',
+        originalXForwardedFor: '52.167.144.143, 52.1.2.3', requestVia: ''
+      }))
+    ];
+    const f = findBotColdPop(entries, null)!;
+    const evidence = f.evidence.join(' ');
+    expect(evidence).toMatch(/AS54994 meteverse limited\. looks like this origin's own CDN forwarding real visitor traffic/);
+    expect(evidence).toMatch(/real end-user IP \(52\.167\.144\.143\)/);
+    expect(evidence).not.toMatch(/DNS confirms/);
+  });
+
+  it('leaves an ordinary ASN with no forwarding evidence and no DNS match as a plain count', () => {
+    const f = findBotColdPop(botColdPopEntries(50, 3, 'XYZ'))!;
+    expect(f.evidence.join(' ')).not.toMatch(/looks like this origin's own CDN/);
   });
 });
 
@@ -173,6 +321,45 @@ describe('buildDdosFinding', () => {
   });
 });
 
+describe('buildDdosFinding — upstream CDN cross-check', () => {
+  // The origin (www.macnica.com) is fronted by Akamai; DNS confirms it (CNAME -> ...edgekey.net).
+  const upstreamAkamai: UpstreamCdnMatch = {
+    hostname: 'www.macnica.com',
+    chain: ['www.macnica.com.edgekey.net'],
+    provider: 'akamai'
+  };
+
+  it('fully rules out a burst when excluding the origin\'s own CDN leaves no other signal', () => {
+    // Same cloud ASN as cloudBurstEntries(), but spread across diverse client IPs/UAs/countries so
+    // no OTHER independent concentration signal survives once the known ASN is excluded.
+    const entries = diverseSourceBurstEntries().map(e => ({ ...e, clientAsName: 'akamai international b.v.', clientAsNumber: '20940' }));
+
+    // Sanity check: without the DNS cross-check, the concentrated cloud ASN alone is enough to flag it.
+    expect(buildDdosFinding(computeCdnMetrics(entries))).not.toBeNull();
+
+    expect(buildDdosFinding(computeCdnMetrics(entries), upstreamAkamai)).toBeNull();
+  });
+
+  it('narrows the evidence but still fires when another independent signal survives the exclusion', () => {
+    // cloudBurstEntries() shares one client IP/UA across every request, so that concentration
+    // signal (unrelated to the ASN) still legitimately warrants a look even once Akamai is excluded.
+    const f = buildDdosFinding(computeCdnMetrics(cloudBurstEntries()), upstreamAkamai)!;
+    expect(f).not.toBeNull();
+    expect(f.evidence.join(' ')).toMatch(/own CDN/i);
+    expect(f.evidence.join(' ')).toMatch(/confirmed via DNS/i);
+    expect(f.evidence.join(' ')).toMatch(/www\.macnica\.com\.edgekey\.net/);
+    // Must not tell the responder to block their own front-door CDN.
+    expect(f.nextSteps.join(' ')).toMatch(/NOT akamai/i);
+  });
+
+  it('has no effect when the DNS-confirmed provider does not match any flagged ASN', () => {
+    const withoutUpstream = buildDdosFinding(computeCdnMetrics(cloudBurstEntries()));
+    const mismatched: UpstreamCdnMatch = { hostname: 'www.macnica.com', chain: ['x.cloudflare.net'], provider: 'cloudflare' };
+    const withMismatch = buildDdosFinding(computeCdnMetrics(cloudBurstEntries()), mismatched);
+    expect(withMismatch).toEqual(withoutUpstream);
+  });
+});
+
 describe('buildTtlRecommendation', () => {
   function repeatedTimed() {
     const base = Date.parse('2026-07-16T03:40:00Z');
@@ -210,6 +397,26 @@ describe('buildTtlRecommendation', () => {
   it('is null when there is not enough repeat-request timing', () => {
     const entries = uniqueUrlBurstEntries(50).map(e => ({ ...e, timeStart: new Date() }));
     expect(buildTtlRecommendation(computeCdnMetrics(entries))).toBeNull();
+  });
+
+  it('recommends a generous (1-week floor) stale-while-revalidate value alongside the TTL raise', () => {
+    const f = buildTtlRecommendation(computeCdnMetrics(repeatedTimed()))!;
+    expect(f.nextSteps.join(' ')).toMatch(/stale-while-revalidate=7d/);
+    expect(f.nextSteps.join(' ')).toMatch(/works even if shielding is not available/i);
+    expect(f.matchedConditions.some(c => c.field === 'recommendedSwrSeconds')).toBe(true);
+  });
+
+  it('does not re-suggest stale-while-revalidate when it already exceeds the default floor', () => {
+    const base = Date.parse('2026-07-16T03:40:00Z');
+    const twoWeeks = 14 * 86400;
+    const out = [];
+    for (let u = 0; u < 12; u++) {
+      out.push(makeEntry({ url: `/u${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchSurrogateControl: `max-age=60,stale-while-revalidate=${twoWeeks}`, timeStart: new Date(base) }));
+      out.push(makeEntry({ url: `/u${u}`, pop: 'BMA', cacheStatus: 'MISS', fetchSurrogateControl: `max-age=60,stale-while-revalidate=${twoWeeks}`, timeStart: new Date(base + 120000) }));
+    }
+    const f = buildTtlRecommendation(computeCdnMetrics(out))!;
+    expect(f.nextSteps.join(' ')).not.toMatch(/stale-while-revalidate=/);
+    expect(f.matchedConditions.some(c => c.field === 'recommendedSwrSeconds')).toBe(false);
   });
 });
 

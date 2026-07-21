@@ -98,7 +98,7 @@ export class CdnAnalysisPanel {
           return;
         }
         try {
-          const report = service.analyzeText(text, pastedInput(msg));
+          const report = await service.analyzeText(text, pastedInput(msg));
           lastReport = report;
           panel.webview.postMessage({ type: 'results', report });
         } catch (err) {
@@ -287,8 +287,17 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'finding';
 }
 
+/**
+ * Formats a 0–1 ratio as a percentage. Plain nearest-integer rounding would show "100%"/"0%" for
+ * values merely close to those boundaries, which reads as an impossible claim of certainty — show
+ * two decimal places instead whenever rounding would land exactly on a boundary the raw value did
+ * not actually reach.
+ */
 function pct(x: number): string {
-  return `${Math.round(x * 100)}%`;
+  const p = x * 100;
+  const rounded = Math.round(p);
+  if ((rounded === 100 && p < 100) || (rounded === 0 && p > 0)) return `${p.toFixed(2)}%`;
+  return `${rounded}%`;
 }
 
 function buildHtml(defaults: { index: string; sourcetype: string; baseline: boolean; tier: 'author' | 'publish' }): string {
@@ -452,7 +461,7 @@ function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function pct(x){ return Math.round(x*100)+'%'; }
+function pct(x){ var p=x*100; var r=Math.round(p); if ((r===100&&p<100)||(r===0&&p>0)) return p.toFixed(2)+'%'; return r+'%'; }
 
 function metric(k, v){ return '<div class="metric"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>'; }
 

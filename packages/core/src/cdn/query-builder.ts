@@ -35,7 +35,10 @@ export const CDN_FIELDS = [
   'geo_country_code',
   'aem_service',
   'aem_tier',
-  'time_start'
+  'time_start',
+  'origin_host',
+  'original_x_forwarded_for',
+  'xdata.request_via'
 ] as const;
 
 const DEFAULT_MAX_EVENTS = 100000;
@@ -46,6 +49,13 @@ const DEFAULT_TIER = 'publish';
 /**
  * Builds the incident-window SPL: row-level events for the service/URLs in the window, with a
  * narrow field projection and a `head` cap. This is the detailed dataset the classifier uses.
+ *
+ * `| sort 0 +_time` forces a genuine chronological (ascending) order before anything else runs.
+ * Without it, Splunk's default result order is not guaranteed to be time-ordered, which several
+ * analyses depend on: which (URL, POP) fetch is "first" (cold) vs. a later repeat, and the
+ * cold-fetch burst-clustering check, are both determined by processing order — an unordered feed
+ * would make those reads unreliable. `sort 0` (not just `sort`) is required to sort the FULL
+ * result set: `sort`'s default cap is only the first 10,000 rows, well under `maxEvents`.
  */
 export function buildIncidentQuery(input: CdnAnalysisInput, opts: CdnFetchOptions): string {
   const parts = baseFilters(input, opts);
@@ -55,7 +65,7 @@ export function buildIncidentQuery(input: CdnAnalysisInput, opts: CdnFetchOption
   if (urlClause) parts.push(urlClause);
 
   const maxEvents = opts.maxEvents ?? DEFAULT_MAX_EVENTS;
-  return `${parts.join(' ')} | fields ${CDN_FIELDS.join(' ')} | head ${maxEvents}`;
+  return `${parts.join(' ')} | sort 0 +_time | fields ${CDN_FIELDS.join(' ')} | head ${maxEvents}`;
 }
 
 /**

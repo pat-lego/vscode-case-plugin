@@ -155,4 +155,18 @@ describe('parseCdnLogs — _raw merged into a JSON row', () => {
     expect(entries[0].pop).toBe('FRA');          // filled from _raw
     expect(entries[0].cacheStatus).toBe('MISS'); // filled from _raw
   });
+
+  it('fills fields from a JSON-encoded _raw (e.g. origin_host, not surfaced as its own column)', () => {
+    // Matches a real Splunk export of this Fastly/Skyline feed: `_raw` is the original event
+    // re-encoded as a single-line JSON string, not the human-readable `key: value` block.
+    const raw = JSON.stringify([{
+      url: '/apac/x',
+      cache_status: 'PASS',
+      client_as_name: 'akamai international b.v.',
+      _raw: JSON.stringify({ origin_host: 'www.macnica.com', client_as_name: 'akamai international b.v.' })
+    }]);
+    const entries = parseCdnLogs(raw);
+    expect(entries[0].originHost).toBe('www.macnica.com');
+    expect(entries[0].clientAsName).toBe('akamai international b.v.'); // explicit column still wins
+  });
 });

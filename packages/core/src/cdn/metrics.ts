@@ -1,4 +1,4 @@
-import { CdnLogEntry, CdnMetrics, PopBaseline } from './types';
+import { AsnForwardedSample, CdnLogEntry, CdnMetrics, PopBaseline } from './types';
 
 /** MISS re-fetch within this many seconds is treated as "should have been cached". */
 const SHORT_TTL_SECONDS = 120;
@@ -21,6 +21,22 @@ const BLANK = new Set(['', '-', 'none', 'n/a', '?']);
 function hasVal(s: string): boolean {
   return !BLANK.has(s.trim().toLowerCase());
 }
+
+/**
+ * Extracts proof that an ASN's traffic is a CDN forwarding a real visitor: the entry's
+ * `X-Forwarded-For` chain has more than one hop, and the LAST hop matches this entry's own
+ * `clientIp` (the ASN's edge is the most recent hop, with a real end-user IP ahead of it).
+ */
+function extractForwardSample(e: CdnLogEntry): AsnForwardedSample | null {
+  if (!hasVal(e.originalXForwardedFor)) return null;
+  const hops = e.originalXForwardedFor.split(',').map(s => s.trim()).filter(Boolean);
+  if (hops.length < 2) return null;
+  const lastHop = hops[hops.length - 1];
+  if (lastHop !== e.clientIp) return null;
+  const realClientIp = hops[0];
+  if (!hasVal(realClientIp) || realClientIp === e.clientIp) return null;
+  return { realClientIp, via: e.requestVia || '' };
+}
 function ratio(n: number, d: number): number {
   return d > 0 ? n / d : 0;
 }
@@ -39,9 +55,23 @@ function extractMaxAge(directives: string): number {
   const m = directives.match(/(?:s-maxage|max-age)\s*=\s*(\d+)/i);
   return m ? parseInt(m[1], 10) : 0;
 }
+/** Extracts the stale-while-revalidate value (seconds) from a directive string, or 0 if none. */
+function extractStaleWhileRevalidate(directives: string): number {
+  const m = directives.match(/stale-while-revalidate\s*=\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : 0;
+}
 
 /** Human-friendly TTL steps (seconds) used when rounding a recommendation up. */
-const NICE_TTLS = [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+const NICE_TTLS = [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 259200, 604800];
+/**
+ * Default floor for a recommended stale-while-revalidate window: a full week. Unlike max-age,
+ * SWR is cheap to set generously — the client-visible freshness signal is unchanged, a real
+ * content change is invalidated by AEM's publish-triggered CDN purge (not by waiting out this
+ * window), and the only downside is staleness on a URL nobody requests for the whole window,
+ * at which point the CDN's own storage eviction likely already dropped it anyway. So the
+ * recommendation floors at this generous default rather than sizing tightly to the observed gap.
+ */
+const SWR_FLOOR_SECONDS = 7 * 86400;
 function niceTtl(seconds: number): number {
   for (const t of NICE_TTLS) if (t >= seconds) return t;
   return NICE_TTLS[NICE_TTLS.length - 1];
@@ -112,6 +142,8 @@ export class CdnAggregator {
   private popMissCount = new Map<string, number>();
   private missWithPopCount = 0;
   private shieldedMissCount = 0;
+  private coldFetchPerSecCount = new Map<number, number>();
+  private coldFetchTimedCount = 0;
   private ttlSum = 0;
   private ttlCount = 0;
   private shortTtlMissCount = 0;
@@ -138,11 +170,13 @@ export class CdnAggregator {
   private maxTs = -Infinity;
   private cacheableTimed = 0;
   private maxAgeCount = new Map<number, number>();
+  private swrCount = new Map<number, number>();
   private urlSpan = new Map<string, { min: number; max: number; count: number }>();
   private urlPopSpan = new Map<string, { min: number; max: number; count: number }>();
 
   // DDoS / traffic-source signals (over all requests)
   private asnAll = new Map<string, { count: number; name: string }>();
+  private asnForwardSample = new Map<string, AsnForwardedSample>();
   private cloudAsnRequestCount = 0;
   private cdnThreatCount = 0;
   private perSecCount = new Map<number, number>();
@@ -152,6 +186,7 @@ export class CdnAggregator {
   private clientIpAll = new Map<string, number>();
   private userAgentAll = new Map<string, number>();
   private countryAll = new Map<string, number>();
+  private originHostAll = new Map<string, number>();
 
   /** Folds one log event into the running aggregates. */
   add(e: CdnLogEntry): void {
@@ -171,11 +206,16 @@ export class CdnAggregator {
       if (a) { a.count++; if (e.clientAsName) a.name = e.clientAsName; }
       else this.asnAll.set(e.clientAsNumber, { count: 1, name: e.clientAsName });
       if (isCloudAsn(e.clientAsName)) this.cloudAsnRequestCount++;
+      if (!this.asnForwardSample.has(e.clientAsNumber)) {
+        const sample = extractForwardSample(e);
+        if (sample) this.asnForwardSample.set(e.clientAsNumber, sample);
+      }
     }
     if (hasVal(e.ddosAction) || hasVal(e.ddosRule) || hasVal(e.maliciousFlags) || hasVal(e.denyReason)) this.cdnThreatCount++;
     if (hasVal(e.clientIp)) this.clientIpAll.set(e.clientIp, (this.clientIpAll.get(e.clientIp) ?? 0) + 1);
     if (hasVal(e.userAgent)) this.userAgentAll.set(e.userAgent, (this.userAgentAll.get(e.userAgent) ?? 0) + 1);
     if (hasVal(e.geoCountryCode)) this.countryAll.set(e.geoCountryCode, (this.countryAll.get(e.geoCountryCode) ?? 0) + 1);
+    if (hasVal(e.originHost)) this.originHostAll.set(e.originHost, (this.originHostAll.get(e.originHost) ?? 0) + 1);
     if (e.timeStart instanceof Date) {
       const ms = e.timeStart.getTime();
       if (ms < this.allMinMs) this.allMinMs = ms;
@@ -230,9 +270,19 @@ export class CdnAggregator {
     if (hasVal(e.pop)) {
       let pops = this.urlPops.get(e.url);
       if (!pops) { pops = new Set(); this.urlPops.set(e.url, pops); }
+      const isFirstFetchAtThisPop = !pops.has(e.pop);
       pops.add(e.pop);
       this.popMissCount.set(e.pop, (this.popMissCount.get(e.pop) ?? 0) + 1);
       this.missWithPopCount++;
+      // Timestamp "first fetch of this URL at this POP" events so finalize() can tell a
+      // synchronized invalidation (deploy/purge — these cluster in a narrow time band) apart
+      // from organic cold-POP traffic (these are spread through the window) via a burst ratio,
+      // the same way peakRequestsPerSec/burstRatio spot a DDoS burst.
+      if (isFirstFetchAtThisPop && e.timeStart instanceof Date) {
+        const sec = Math.floor(e.timeStart.getTime() / 1000);
+        this.coldFetchPerSecCount.set(sec, (this.coldFetchPerSecCount.get(sec) ?? 0) + 1);
+        this.coldFetchTimedCount++;
+      }
     }
     if (e.shieldingUsed) this.shieldedMissCount++;
 
@@ -255,6 +305,8 @@ export class CdnAggregator {
     }
     const maxAge = extractMaxAge(`${e.fetchCacheControl};${e.fetchSurrogateControl}`);
     if (maxAge > 0) this.maxAgeCount.set(maxAge, (this.maxAgeCount.get(maxAge) ?? 0) + 1);
+    const swr = extractStaleWhileRevalidate(`${e.fetchCacheControl};${e.fetchSurrogateControl}`);
+    if (swr > 0) this.swrCount.set(swr, (this.swrCount.get(swr) ?? 0) + 1);
 
     const ct = e.contentType.split(';')[0].trim() || 'unknown';
     this.ctCount.set(ct, (this.ctCount.get(ct) ?? 0) + 1);
@@ -267,6 +319,10 @@ export class CdnAggregator {
     if (hasVal(e.clientAsNumber)) {
       this.asnCount.set(e.clientAsNumber, (this.asnCount.get(e.clientAsNumber) ?? 0) + 1);
       if (e.clientAsName) this.asnName.set(e.clientAsNumber, e.clientAsName);
+      if (!this.asnForwardSample.has(e.clientAsNumber)) {
+        const sample = extractForwardSample(e);
+        if (sample) this.asnForwardSample.set(e.clientAsNumber, sample);
+      }
     }
 
     // Same URL + POP re-fetched within the previous TTL — a "not actually cached" signal.
@@ -321,7 +377,7 @@ export class CdnAggregator {
       cdnThreatShare: ratio(this.cdnThreatCount, this.total),
       topSourceAsns: [...this.asnAll.entries()]
         .sort((a, b) => b[1].count - a[1].count).slice(0, 6)
-        .map(([asn, a]) => ({ asn, name: a.name, count: a.count, cloud: isCloudAsn(a.name) })),
+        .map(([asn, a]) => ({ asn, name: a.name, count: a.count, cloud: isCloudAsn(a.name), forwardedSample: this.asnForwardSample.get(asn) })),
       distinctClientIpCount: this.clientIpAll.size,
       topClientIpRequestShare: ratio(topClientIp.count, this.total),
       topClientIpAddress: topClientIp.key,
@@ -336,7 +392,8 @@ export class CdnAggregator {
       topCountryRequestShare: ratio(topCountry.count, this.total),
       topCountryCode: topCountry.key,
       topCountries: [...this.countryAll.entries()]
-        .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([country, count]) => ({ country, count }))
+        .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([country, count]) => ({ country, count })),
+      topOriginHost: topEntry(this.originHostAll).key
     };
   }
 
@@ -392,6 +449,16 @@ export class CdnAggregator {
 
     // ── TTL / request-rate sizing (over cacheable HIT+MISS with timestamps) ──────────
     const windowSeconds = this.maxTs > this.minTs ? (this.maxTs - this.minTs) / 1000 : 0;
+
+    // Is the cold-POP-first-fetch traffic a tight burst (many first-fetches within the same few
+    // seconds — the signature of a synchronized invalidation: a deploy, a dispatcher/CDN purge)
+    // or spread through the window (organic — different POPs genuinely seeing this URL for the
+    // first time at different, unrelated times)? Same peak-vs-mean technique as the DDoS burst
+    // ratio, applied to just the first-fetch timestamps.
+    let coldFetchPeakPerSec = 0;
+    for (const c of this.coldFetchPerSecCount.values()) if (c > coldFetchPeakPerSec) coldFetchPeakPerSec = c;
+    const coldFetchMeanPerSec = windowSeconds > 0 ? this.coldFetchTimedCount / windowSeconds : 0;
+    const coldFetchBurstRatio = coldFetchMeanPerSec > 0 ? coldFetchPeakPerSec / coldFetchMeanPerSec : 0;
     const cacheableRequestRatePerMin = windowSeconds > 0 ? this.cacheableTimed / (windowSeconds / 60) : 0;
     // Mean inter-arrival per URL (aggregate = shield view) and per URL+POP (edge view).
     const aggGaps: number[] = [];
@@ -418,11 +485,26 @@ export class CdnAggregator {
     for (const [age, count] of this.maxAgeCount) {
       if (count > maxAgeModeCount) { maxAgeModeCount = count; observedMaxAgeSeconds = age; }
     }
+    let observedSwrSeconds = 0;
+    let swrModeCount = 0;
+    for (const [swr, count] of this.swrCount) {
+      if (count > swrModeCount) { swrModeCount = count; observedSwrSeconds = swr; }
+    }
     // Size the TTL to the edge (per-POP) inter-arrival, but NEVER below the current TTL — lowering a
     // TTL only causes MORE MISSes; a longer TTL caches more (at the cost of freshness). So the
     // recommendation is a floor at the current value: it only ever suggests keeping or raising.
     const gapTargetTtl = niceTtl(Math.max(p90PerPopGapSeconds, p90AggGapSeconds));
     const recommendedTtlSeconds = ttlDataSufficient ? Math.max(gapTargetTtl, observedMaxAgeSeconds) : 0;
+    // stale-while-revalidate is a PER-POP (edge) mechanism — unlike max-age it works without a
+    // shield: once a POP has cached the object, that same POP can serve the stale copy (and
+    // revalidate in the background) instead of blocking on origin the next time it goes stale.
+    // It is cheap to set generously (see SWR_FLOOR_SECONDS), so this floors at a full week rather
+    // than sizing tightly to the observed per-POP gap — that gap is still respected as a lower
+    // bound too, for the rare case it exceeds the floor. Floored at the current SWR as well —
+    // never suggest shortening it.
+    const recommendedSwrSeconds = ttlDataSufficient
+      ? Math.max(SWR_FLOOR_SECONDS, niceTtl(p90PerPopGapSeconds), observedSwrSeconds)
+      : 0;
 
     // POP rarity
     const baselineUsable = !!baseline && baseline.totalRequests > 0;
@@ -461,7 +543,7 @@ export class CdnAggregator {
       .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([bot, count]) => ({ bot, count }));
     const topAsns = [...this.asnCount.entries()]
       .sort((a, b) => b[1] - a[1]).slice(0, 5)
-      .map(([asn, count]) => ({ asn, name: this.asnName.get(asn) ?? '', count }));
+      .map(([asn, count]) => ({ asn, name: this.asnName.get(asn) ?? '', count, forwardedSample: this.asnForwardSample.get(asn) }));
 
     return {
       totalRequests: this.total,
@@ -490,6 +572,7 @@ export class CdnAggregator {
       coldPopFirstFetchShare: ratio(firstFetchPerPopMissCount, missCount),
       repeatSamePopMissCount,
       repeatSamePopShare: ratio(repeatSamePopMissCount, missCount),
+      coldFetchBurstRatio,
 
       shortTtlMissCount: this.shortTtlMissCount,
       shortTtlMissShare: ratio(this.shortTtlMissCount, missCount),
@@ -505,6 +588,8 @@ export class CdnAggregator {
       p90PerPopGapSeconds,
       observedMaxAgeSeconds,
       recommendedTtlSeconds,
+      observedSwrSeconds,
+      recommendedSwrSeconds,
       ttlDataSufficient,
 
       distinctPopCount: this.popMissCount.size,
@@ -607,6 +692,7 @@ function emptyMetrics(warnings: string[]): CdnMetrics {
     coldPopFirstFetchShare: 0,
     repeatSamePopMissCount: 0,
     repeatSamePopShare: 0,
+    coldFetchBurstRatio: 0,
     shortTtlMissCount: 0,
     shortTtlMissShare: 0,
     staleEligibleMissShare: 0,
@@ -620,6 +706,8 @@ function emptyMetrics(warnings: string[]): CdnMetrics {
     p90PerPopGapSeconds: 0,
     observedMaxAgeSeconds: 0,
     recommendedTtlSeconds: 0,
+    observedSwrSeconds: 0,
+    recommendedSwrSeconds: 0,
     ttlDataSufficient: 0,
     distinctPopCount: 0,
     topPopMissShare: 0,
@@ -643,6 +731,7 @@ function emptyMetrics(warnings: string[]): CdnMetrics {
     burstRatio: 0,
     cdnThreatShare: 0,
     topSourceAsns: [],
+    topOriginHost: '',
     distinctClientIpCount: 0,
     topClientIpRequestShare: 0,
     topClientIpAddress: '',

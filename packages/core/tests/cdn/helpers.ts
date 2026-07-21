@@ -32,6 +32,9 @@ export function makeEntry(o: Partial<CdnLogEntry> = {}): CdnLogEntry {
     denyReason: '',
     geoCountryCode: 'JP',
     aemService: 'cm-p53812-e590634',
+    originHost: 'www.example.com',
+    originalXForwardedFor: '',
+    requestVia: '',
     timeStart: undefined,
     raw: {},
     ...o
@@ -184,6 +187,9 @@ export function toRaw(e: Partial<CdnLogEntry>): Record<string, string> {
     malicious_flags: m.maliciousFlags,
     deny_reason: m.denyReason,
     geo_country_code: m.geoCountryCode,
-    aem_service: m.aemService
+    aem_service: m.aemService,
+    origin_host: m.originHost,
+    original_x_forwarded_for: m.originalXForwardedFor,
+    'xdata.request_via': m.requestVia
   };
 }
