@@ -15,7 +15,13 @@ function showDebug(msg: string) {
 
 function render(state: BridgeState) {
   log('render', state);
-  showDebug(`conn:${state.connected} case:${state.activeCase?.caseId ?? 'null'} port:${state.port}`);
+  const lastConn = state.lastConnectedAt ? new Date(state.lastConnectedAt).toLocaleTimeString() : 'never';
+  const lastDisc = state.lastDisconnectedAt ? new Date(state.lastDisconnectedAt).toLocaleTimeString() : 'never';
+  showDebug(
+    `conn:${state.connected} ws:${state.wsReadyState} case:${state.activeCase?.caseId ?? 'null'} port:${state.port}\n` +
+    `lastUp:${lastConn} lastDown:${lastDisc} reconnects:${state.reconnectAttempts}` +
+    (state.lastError ? `\nlastErr: ${state.lastError}` : '')
+  );
   const connected = state.connected;
   $('dot').className = 'dot' + (connected ? ' on' : '');
   $('status-label').textContent = connected ? 'Connected' : 'Disconnected';
@@ -138,6 +144,22 @@ chrome.runtime.sendMessage({ type: 'getState' }, (state: BridgeState) => {
     pollForCase();
   }
 });
+
+// Safety net: the popup can open at the exact instant the (on-demand) service
+// worker is spinning up and racing through its connect sequence. If the
+// initial getState() above lands mid-race and the follow-up 'stateChanged'
+// push from background.onopen fires before this popup's onMessage listener
+// is registered, that single push is silently dropped (chrome.runtime
+// delivers to whoever is listening at send-time, no replay/queueing) and the
+// popup would otherwise sit frozen on stale (usually "disconnected") state
+// for as long as it stays open. Poll every 1.5s as a low-cost backstop so a
+// missed push self-corrects instead of requiring the user to reopen the popup.
+setInterval(() => {
+  chrome.runtime.sendMessage({ type: 'getState' }, (state: BridgeState) => {
+    if (chrome.runtime.lastError) return; // background momentarily unavailable — next tick retries
+    render(state);
+  });
+}, 1500);
 
 function pollForCase() {
   let attempts = 0;

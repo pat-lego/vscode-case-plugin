@@ -13,7 +13,13 @@
   }
   function render(state) {
     log("render", state);
-    showDebug(`conn:${state.connected} case:${state.activeCase?.caseId ?? "null"} port:${state.port}`);
+    const lastConn = state.lastConnectedAt ? new Date(state.lastConnectedAt).toLocaleTimeString() : "never";
+    const lastDisc = state.lastDisconnectedAt ? new Date(state.lastDisconnectedAt).toLocaleTimeString() : "never";
+    showDebug(
+      `conn:${state.connected} ws:${state.wsReadyState} case:${state.activeCase?.caseId ?? "null"} port:${state.port}
+lastUp:${lastConn} lastDown:${lastDisc} reconnects:${state.reconnectAttempts}` + (state.lastError ? `
+lastErr: ${state.lastError}` : "")
+    );
     const connected = state.connected;
     $("dot").className = "dot" + (connected ? " on" : "");
     $("status-label").textContent = connected ? "Connected" : "Disconnected";
@@ -125,6 +131,12 @@
       pollForCase();
     }
   });
+  setInterval(() => {
+    chrome.runtime.sendMessage({ type: "getState" }, (state) => {
+      if (chrome.runtime.lastError) return;
+      render(state);
+    });
+  }, 1500);
   function pollForCase() {
     let attempts = 0;
     chrome.runtime.sendMessage({ type: "refreshActiveCase" });

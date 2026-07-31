@@ -2,6 +2,12 @@ import { getState, setState, InboundMessage, OutboundMessage } from '../bridge/w
 import { captureTimestamp } from '../utils/capture-name.js';
 
 let ws: WebSocket | null = null;
+let connectWatchdog: ReturnType<typeof setTimeout> | undefined;
+
+// If a connection attempt doesn't resolve (open or close/error) within this
+// window, force it closed and retry. Without this, a hung CONNECTING socket
+// blocks every future attempt forever — see the guard at the top of connect().
+const CONNECT_TIMEOUT_MS = 5000;
 
 function log(level: 'DEBUG'|'INFO'|'WARN'|'ERROR', msg: string, ctx?: Record<string, unknown>) {
   const ts = new Date().toISOString().slice(11, 23);
@@ -20,28 +26,76 @@ function isContextValid(): boolean {
   try { return !!chrome.runtime.id; } catch { return false; }
 }
 
+// Numeric WebSocket.readyState is meaningless in logs — map it to a name.
+// NOTE: this is the ONLY thing that drives the popup's connected/disconnected
+// dot. VS Code's status bar, by contrast, shows "connected" for up to 60s
+// after its *last activity* (any WS message OR plain HTTP request) even with
+// zero open WS clients — see BridgeServer.ACTIVITY_TTL in bridge-server.ts.
+// So a mismatch where VS Code says "connected" and this popup says
+// "disconnected" almost always means: the WS closed (often because the SW
+// was suspended/terminated by Chrome and the reconnect alarm hasn't fired
+// yet), while VS Code is still inside that 60s grace window. Check
+// `wsReadyState`/`reconnectAttempts`/`lastDisconnectedAt` in the popup debug
+// line, and the background service worker console
+// (chrome://extensions → this extension → "service worker" → Inspect), to
+// confirm.
+function readyStateName(state: number | undefined | null): string {
+  switch (state) {
+    case WebSocket.CONNECTING: return 'CONNECTING';
+    case WebSocket.OPEN: return 'OPEN';
+    case WebSocket.CLOSING: return 'CLOSING';
+    case WebSocket.CLOSED: return 'CLOSED';
+    default: return 'NONE';
+  }
+}
+
 log('INFO', 'service worker started');
 
 // Mark disconnected on restart but keep activeCase — it will be refreshed
 // from VS Code once the WebSocket reconnects.
-setState({ connected: false }).then(() => log('INFO', 'initial state reset to disconnected'));
+setState({ connected: false, wsReadyState: 'CLOSED' }).then(() => log('INFO', 'initial state reset to disconnected'));
 
 async function connect() {
   const state = await getState();
   const url = `ws://127.0.0.1:${state.port}`;
-  log('INFO', 'connect()', { readyState: ws?.readyState ?? null, url });
+  log('INFO', 'connect()', { readyState: readyStateName(ws?.readyState), url });
 
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    log('DEBUG', 'connect: already connected/connecting — skip');
+    log('DEBUG', 'connect: already connected/connecting — skip', { readyState: readyStateName(ws.readyState) });
     return;
   }
 
   log('INFO', 'creating WebSocket', { url });
+  await setState({ wsReadyState: 'CONNECTING' });
   ws = new WebSocket(url);
 
+  // Known MV3 gotcha: an extension service worker can be suspended mid-
+  // handshake, orphaning the socket — VS Code's server may have already
+  // accepted the TCP/WS connection (so its status bar shows "connected"),
+  // but this side never gets the onopen callback to know it, and readyState
+  // is stuck at CONNECTING forever. Since the guard above treats CONNECTING
+  // as "an attempt is already in flight, don't retry", a hang here would
+  // otherwise block every future reconnect permanently. Force it closed
+  // after CONNECT_TIMEOUT_MS so onclose fires and scheduleReconnect() runs.
+  clearTimeout(connectWatchdog);
+  const watchdogFor = ws;
+  connectWatchdog = setTimeout(() => {
+    if (watchdogFor.readyState === WebSocket.CONNECTING) {
+      log('WARN', 'connection attempt timed out — forcing close to retry', { url, timeoutMs: CONNECT_TIMEOUT_MS });
+      watchdogFor.close();
+    }
+  }, CONNECT_TIMEOUT_MS);
+
   ws.onopen = async () => {
-    log('INFO', 'WebSocket connected');
-    await setState({ connected: true });
+    clearTimeout(connectWatchdog);
+    log('INFO', 'WebSocket connected', { url });
+    await setState({
+      connected: true,
+      wsReadyState: 'OPEN',
+      lastConnectedAt: new Date().toISOString(),
+      lastError: null,
+      reconnectAttempts: 0
+    });
     notifyPopup({ type: 'stateChanged' });
     startPing();
     // Fetch active case via HTTP — more reliable than waiting for a WS message.
@@ -71,11 +125,24 @@ async function connect() {
   };
 
   ws.onclose = async (ev) => {
-    log('INFO', 'WebSocket closed', { code: ev.code, reason: ev.reason || null });
+    clearTimeout(connectWatchdog);
+    log('INFO', 'WebSocket closed', {
+      code: ev.code,
+      reason: ev.reason || null,
+      wasClean: ev.wasClean,
+      note: closeCodeHint(ev.code)
+    });
     ws = null;
-    if (!isContextValid()) return;
+    if (!isContextValid()) {
+      log('WARN', 'onclose: extension context invalidated — SW is shutting down, skipping state update');
+      return;
+    }
     try {
-      await setState({ connected: false });
+      await setState({
+        connected: false,
+        wsReadyState: 'CLOSED',
+        lastDisconnectedAt: new Date().toISOString()
+      });
       notifyPopup({ type: 'stateChanged' });
       scheduleReconnect();
     } catch (e) {
@@ -84,9 +151,25 @@ async function connect() {
   };
 
   ws.onerror = (ev) => {
-    log('ERROR', 'WebSocket error');
+    // The DOM WebSocket 'error' event carries no message/reason by design —
+    // this fires for refused connections (VS Code not running / wrong port),
+    // TLS issues, etc. The onclose handler that follows has the real detail
+    // (code/reason), so we just record that an error happened here.
+    const detail = `WebSocket error while ${readyStateName(ws?.readyState)} (url=${url})`;
+    log('ERROR', detail);
+    setState({ lastError: detail }).catch(() => { /* context may be gone */ });
     ws?.close();
   };
+}
+
+function closeCodeHint(code: number): string {
+  switch (code) {
+    case 1000: return 'normal closure';
+    case 1001: return 'endpoint going away (e.g. VS Code closing/reloading)';
+    case 1006: return 'abnormal closure — likely could not reach VS Code bridge server (not running / wrong port / firewall)';
+    case 1015: return 'TLS handshake failure';
+    default: return 'see https://developer.mozilla.org/docs/Web/API/CloseEvent/code';
+  }
 }
 
 async function fetchActiveCase(port: number) {
@@ -108,13 +191,18 @@ async function fetchActiveCase(port: number) {
 }
 
 function scheduleReconnect() {
-  // Use alarms instead of setTimeout so the reconnect survives SW termination.
-  // chrome.alarms minimum is ~1 min in production, but "periodInMinutes: 1/3"
-  // already handles the keep-alive. The alarm named "reconnect" is a one-shot
-  // that fires as soon as Chrome allows (typically ~30s minimum).
+  // Alarms survive SW termination, but Chrome clamps their minimum period to
+  // ~30-60s — too slow for a snappy retry. Also fire a same-process setTimeout
+  // as a best-effort fast path; if the SW gets torn down before it fires, the
+  // alarm below is the durable fallback that still guarantees a retry.
   if (!isContextValid()) return;
   chrome.alarms.create('reconnect', { delayInMinutes: 0.1 });
-  log('DEBUG', 'reconnect alarm scheduled');
+  setTimeout(() => { if (isContextValid()) connect(); }, 2000);
+  getState().then(state => {
+    const attempts = (state.reconnectAttempts ?? 0) + 1;
+    setState({ reconnectAttempts: attempts });
+    log('DEBUG', 'reconnect scheduled', { attempts, fastRetryMs: 2000 });
+  });
 }
 
 function startPing() {
