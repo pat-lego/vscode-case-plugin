@@ -292,6 +292,9 @@ export class CaseManager {
     if (!session || !session.casePath) return;
     const caseDir = path.join(session.casePath, caseId);
     if (!fs.existsSync(caseDir)) return;
+    // Drop entries whose backing file was deleted outside the extension so the
+    // viewer never offers a file that no longer exists.
+    session.meta.evidence = session.meta.evidence.filter(ev => !evidenceFileMissing(ev));
     // Skip stored content files that the extension itself wrote
     const storedFilePaths = new Set<string>();
     for (const ev of session.meta.evidence) {
@@ -305,6 +308,38 @@ export class CaseManager {
     }
     const extra = scanDirForEvidence(caseDir, session.meta.evidence, storedFilePaths);
     if (extra.length > 0) session.meta.evidence.push(...extra);
+  }
+
+  /**
+   * Re-parses a case's primary MD file from disk and replaces the in-memory
+   * meta with whatever is actually on disk right now. The in-memory session
+   * is only ever a write-through mirror — this is what makes external edits
+   * (another editor, git, Obsidian, a teammate's change) visible instead of
+   * being silently overwritten by a stale in-memory copy. `threadDumpSignals`
+   * and `findings` are runtime-only and are left untouched.
+   */
+  reloadFromDisk(caseId: string): boolean {
+    const session = this.sessions.get(caseId);
+    if (!session || !session.casePath) return false;
+
+    const caseDir = path.join(session.casePath, caseId);
+    const mdPath = path.join(caseDir, `${caseId}.md`);
+    if (!fs.existsSync(mdPath)) return false;
+
+    try {
+      const result = this.parseCaseFile(mdPath, caseDir);
+      if (!result) return false;
+      const extra = scanDirForEvidence(caseDir, result.meta.evidence, result.storedFilePaths);
+      result.meta.evidence.push(...extra);
+
+      session.meta = result.meta;
+      session.readonly = result.readonly;
+      this.log.debug('case-mgr', 'reloadFromDisk', { caseId });
+      return true;
+    } catch (err) {
+      this.log.error('case-mgr', 'reloadFromDisk failed', { caseId, error: String(err) });
+      return false;
+    }
   }
 
   /** Returns the on-disk directory for a case, or undefined if not disk-backed. */
@@ -435,7 +470,7 @@ export class CaseManager {
           }
         }
         return item;
-      });
+      }).filter(item => !evidenceFileMissing(item));
 
       return {
         meta: {
@@ -617,6 +652,15 @@ function extractMdBody(content: string): string {
  * evidence list, and returns them as EvidenceItem entries.
  * Pass `skip` to exclude extension-managed stored content files (ev-*.txt).
  */
+/**
+ * True when an evidence item has no in-memory content to fall back on and its
+ * backing file is gone from disk (deleted outside the extension — Finder, git,
+ * another tool). Such items should never be shown in the evidence list/viewer.
+ */
+function evidenceFileMissing(ev: EvidenceItem): boolean {
+  return !!ev.filePath && !ev.rawContent && !fs.existsSync(ev.filePath);
+}
+
 function scanDirForEvidence(caseDir: string, existing: EvidenceItem[], skip?: Set<string>): EvidenceItem[] {
   const trackedPaths = new Set(existing.map(e => e.filePath).filter(Boolean));
   const extra: EvidenceItem[] = [];

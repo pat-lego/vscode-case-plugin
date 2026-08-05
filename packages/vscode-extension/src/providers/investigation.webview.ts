@@ -71,11 +71,16 @@ export class InvestigationWebview {
   openCase(caseId: string) {
     const existing = this.panels.get(caseId);
     if (existing) {
+      this.refreshCaseFromDisk(caseId);
       this.caseManager.setActiveCase(caseId);
       existing.reveal(vscode.ViewColumn.One);
       return;
     }
 
+    // Always read the case fresh off disk before building the panel, so any
+    // external edit to the MD file since the extension started (or since it
+    // was last opened) is what gets shown — never a stale in-memory copy.
+    this.caseManager.reloadFromDisk(caseId);
     const session = this.caseManager.getSession(caseId);
     if (!session) return;
 
@@ -93,8 +98,26 @@ export class InvestigationWebview {
     panel.webview.onDidReceiveMessage(msg => this.handleMessage(caseId, msg));
     panel.onDidDispose(() => { this.panels.delete(caseId); this.knownEvidenceIds.delete(caseId); });
     panel.onDidChangeViewState(e => {
-      if (e.webviewPanel.active) this.caseManager.setActiveCase(caseId);
+      if (!e.webviewPanel.active) return;
+      this.refreshCaseFromDisk(caseId);
+      this.caseManager.setActiveCase(caseId);
     });
+  }
+
+  /**
+   * Re-reads the case's MD file from disk and, if a panel is already open for
+   * it, pushes the fresh notes/status/title into the webview. Evidence is
+   * intentionally not re-pushed here since the webview appends rows without
+   * de-duping — evidence changes already flow through their own explicit
+   * add/remove messages.
+   */
+  private refreshCaseFromDisk(caseId: string) {
+    if (!this.caseManager.reloadFromDisk(caseId)) return;
+    const panel = this.panels.get(caseId);
+    const session = this.caseManager.getSession(caseId);
+    if (!panel || !session) return;
+    panel.webview.postMessage({ type: 'notesUpdated', notes: session.meta.notes ?? '' });
+    panel.webview.postMessage({ type: 'caseUpdated', status: session.meta.status, title: session.meta.title });
   }
 
   private pushEvidenceAdded(caseId: string, item: { id: string; [key: string]: unknown }) {
@@ -994,7 +1017,6 @@ window.onerror = function(msg, src, line) {
 
 const vscode = acquireVsCodeApi();
 let items = [];
-let saveTimer = null;
 var _recoveryNotes = '';
 var groupEls = {}; // groupName -> group container element
 var draggingEv = null; // set during evidence drag-and-drop
@@ -1545,16 +1567,14 @@ function doSaveNotes() {
 }
 
 document.getElementById('notes-area').addEventListener('input', function() {
-  var ind = document.getElementById('save-indicator');
-  if (ind) { ind.classList.add('show'); ind.classList.add('unsaved'); ind.textContent = 'Unsaved'; }
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(doSaveNotes, 800);
+  // Write straight through to the MD file on every keystroke - no debounce,
+  // no client-side cache standing between typing and disk.
+  doSaveNotes();
   clearTimeout(embRefTimer);
   embRefTimer = setTimeout(function() { updateEmbeddedRefs(document.getElementById('notes-area').value); }, 600);
 });
 
 document.getElementById('notes-area').addEventListener('blur', function() {
-  clearTimeout(saveTimer);
   doSaveNotes();
 });
 

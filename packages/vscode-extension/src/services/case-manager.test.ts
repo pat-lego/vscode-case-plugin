@@ -95,6 +95,41 @@ describe('CaseManager.resolveCase', () => {
   });
 });
 
+describe('CaseManager.reloadFromDisk', () => {
+  it('picks up notes edited externally (e.g. in another editor)', () => {
+    const tmpDir = makeTmpDirTracked();
+    mockCasePaths([tmpDir]);
+    const ctx = makeContext();
+    const cm = new CaseManager(ctx);
+
+    cm.createCase('CASE-5', 'Reload Test', undefined, 'original notes');
+    expect(cm.getSession('CASE-5')!.meta.notes).toBe('original notes');
+
+    // Simulate an external process (another editor, git, etc.) rewriting the
+    // MD file directly, bypassing CaseManager entirely.
+    const mdPath = path.join(tmpDir, 'CASE-5', 'CASE-5.md');
+    const raw = fs.readFileSync(mdPath, 'utf-8');
+    const externallyEdited = raw.replace('original notes', 'edited externally on disk');
+    fs.writeFileSync(mdPath, externallyEdited, 'utf-8');
+
+    // Without a reload, the in-memory session still shows the stale value.
+    expect(cm.getSession('CASE-5')!.meta.notes).toBe('original notes');
+
+    const ok = cm.reloadFromDisk('CASE-5');
+    expect(ok).toBe(true);
+    expect(cm.getSession('CASE-5')!.meta.notes).toBe('edited externally on disk');
+  });
+
+  it('returns false for an unknown case', () => {
+    const tmpDir = makeTmpDirTracked();
+    mockCasePaths([tmpDir]);
+    const ctx = makeContext();
+    const cm = new CaseManager(ctx);
+
+    expect(cm.reloadFromDisk('NOPE')).toBe(false);
+  });
+});
+
 describe('CaseManager.removeEvidence', () => {
   it('deletes the stored .txt file for ev- prefixed evidence items', () => {
     const tmpDir = makeTmpDirTracked();
@@ -146,6 +181,80 @@ describe('CaseManager.removeEvidence', () => {
     expect(fs.existsSync(diskFile)).toBe(true);
     cm.removeEvidence('CASE-4', 'disk-thread.tdump');
     expect(fs.existsSync(diskFile)).toBe(false);
+  });
+});
+
+describe('CaseManager evidence file existence checks', () => {
+  it('drops evidence whose backing file was deleted outside the extension when reloading from disk', () => {
+    const tmpDir = makeTmpDirTracked();
+    mockCasePaths([tmpDir]);
+    const ctx = makeContext();
+    const cm = new CaseManager(ctx);
+
+    cm.createCase('CASE-6', 'Evidence Existence Test');
+    const caseDir = path.join(tmpDir, 'CASE-6');
+    const imgPath = path.join(caseDir, 'screenshot.png');
+    fs.writeFileSync(imgPath, Buffer.from('fake-png-bytes'));
+
+    cm.addEvidence('CASE-6', {
+      id: 'ev-img-1',
+      type: 'screenshot',
+      source: 'local-file',
+      capturedAt: new Date(),
+      filePath: imgPath,
+    });
+    expect(cm.getSession('CASE-6')!.meta.evidence.some(e => e.id === 'ev-img-1')).toBe(true);
+
+    // Simulate the file being deleted outside the extension (Finder, git, etc.)
+    fs.unlinkSync(imgPath);
+
+    expect(cm.reloadFromDisk('CASE-6')).toBe(true);
+    expect(cm.getSession('CASE-6')!.meta.evidence.some(e => e.id === 'ev-img-1')).toBe(false);
+  });
+
+  it('prunes evidence whose backing file has vanished during refreshDiskEvidence', () => {
+    const tmpDir = makeTmpDirTracked();
+    mockCasePaths([tmpDir]);
+    const ctx = makeContext();
+    const cm = new CaseManager(ctx);
+
+    cm.createCase('CASE-7', 'Refresh Evidence Test');
+    const caseDir = path.join(tmpDir, 'CASE-7');
+    const imgPath = path.join(caseDir, 'shot.png');
+    fs.writeFileSync(imgPath, Buffer.from('fake-png-bytes'));
+
+    cm.addEvidence('CASE-7', {
+      id: 'ev-img-2',
+      type: 'screenshot',
+      source: 'local-file',
+      capturedAt: new Date(),
+      filePath: imgPath,
+    });
+
+    fs.unlinkSync(imgPath);
+
+    cm.refreshDiskEvidence('CASE-7');
+    expect(cm.getSession('CASE-7')!.meta.evidence.some(e => e.id === 'ev-img-2')).toBe(false);
+  });
+
+  it('keeps text evidence whose content is already cached in memory even if the stored file is missing', () => {
+    const tmpDir = makeTmpDirTracked();
+    mockCasePaths([tmpDir]);
+    const ctx = makeContext();
+    const cm = new CaseManager(ctx);
+
+    cm.createCase('CASE-8', 'Cached Content Test');
+    cm.addEvidence('CASE-8', {
+      id: 'ev-log-1',
+      type: 'log-export',
+      source: 'test',
+      capturedAt: new Date(),
+      filePath: '',
+      rawContent: 'log content already in memory',
+    });
+
+    expect(cm.reloadFromDisk('CASE-8')).toBe(true);
+    expect(cm.getSession('CASE-8')!.meta.evidence.some(e => e.id === 'ev-log-1')).toBe(true);
   });
 });
 
