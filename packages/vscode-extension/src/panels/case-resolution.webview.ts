@@ -23,23 +23,39 @@ export class CaseResolutionPanel {
     panel.webview.html = buildHtml(caseId, topFindings);
 
     panel.webview.onDidReceiveMessage(msg => {
-      if (msg.type === 'resolve') {
-        const config = vscode.workspace.getConfiguration('investigator');
-        const initials = config.get<string>('engineerInitials') ?? 'unknown';
-        caseManager.resolveCase(caseId, msg.resolution, initials);
-        vscode.window.showInformationMessage(`Case ${caseId} resolved.`);
+      try {
+        if (msg.type === 'resolve') {
+          const config = vscode.workspace.getConfiguration('investigator');
+          const initials = config.get<string>('engineerInitials') ?? 'unknown';
+          const ok = caseManager.resolveCase(caseId, msg.resolution, initials);
+          if (!ok) {
+            // Do NOT dispose the panel — the resolution text the user just wrote would be
+            // gone with it. Leave it on screen so they can retry or copy it out safely.
+            vscode.window.showErrorMessage(
+              `Incident Investigator: failed to save the resolution for ${caseId}. Your text is still in this panel — copy it somewhere safe, check disk space/permissions for the case folder, then click "Mark as Resolved" again.`
+            );
+            panel.webview.postMessage({ type: 'resolveFailed' });
+            return;
+          }
+          vscode.window.showInformationMessage(`Case ${caseId} resolved.`);
 
-        if (msg.createSignature && msg.finding) {
-          vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
+          if (msg.createSignature && msg.finding) {
+            vscode.commands.executeCommand('investigator.buildSignature', caseId, msg.finding);
+          }
+
+          if (msg.aiSignatureReview) {
+            vscode.commands.executeCommand('investigator.suggestSignatureFromResolution', caseId, msg.resolution);
+          }
+
+          panel.dispose();
         }
-
-        if (msg.aiSignatureReview) {
-          vscode.commands.executeCommand('investigator.suggestSignatureFromResolution', caseId, msg.resolution);
-        }
-
-        panel.dispose();
+        if (msg.type === 'cancel') panel.dispose();
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Incident Investigator: unexpected error resolving ${caseId} (${err}). Your text is still in this panel — copy it somewhere safe before retrying.`
+        );
+        panel.webview.postMessage({ type: 'resolveFailed' });
       }
-      if (msg.type === 'cancel') panel.dispose();
     });
   }
 }
@@ -101,27 +117,65 @@ ${findings.length > 0 ? `
 </div>
 
 <div class="actions">
-  <button class="btn primary" onclick="resolve()">Mark as Resolved</button>
+  <button class="btn primary" id="resolve-btn" onclick="resolve()">Mark as Resolved</button>
   <button class="btn" onclick="cancel()">Cancel</button>
 </div>
+<div id="resolve-error" style="display:none;color:var(--vscode-errorForeground);font-size:11px;margin-top:8px"></div>
 
 <script>
 const vscode = acquireVsCodeApi();
 const findings = ${JSON.stringify(findings)};
 
+// Never let an uncaught error silently drop the resolution text the user wrote -
+// surface it plainly so they know to copy their text out before doing anything else.
+window.onerror = function(msg, src, line) {
+  const el = document.getElementById('resolve-error');
+  if (el) {
+    el.textContent = 'This panel hit an error (' + msg + '). Your text has not been sent - copy it somewhere safe before retrying.';
+    el.style.display = 'block';
+  }
+  const btn = document.getElementById('resolve-btn');
+  if (btn) btn.disabled = false;
+  return false;
+};
+
+window.addEventListener('message', function(evt) {
+  if (evt.data && evt.data.type === 'resolveFailed') {
+    const el = document.getElementById('resolve-error');
+    if (el) {
+      el.textContent = 'Failed to save - see the notification for details. Your text is still here; fix the issue, then click "Mark as Resolved" again.';
+      el.style.display = 'block';
+    }
+    const btn = document.getElementById('resolve-btn');
+    if (btn) btn.disabled = false;
+  }
+});
+
 function resolve() {
-  const resolution = document.getElementById('resolution').value.trim();
-  if (!resolution) { alert('Please describe the resolution.'); return; }
-  const createSig = document.getElementById('create-sig')?.checked ?? false;
-  const aiSigReview = document.getElementById('ai-sig-review')?.checked ?? false;
-  const idx = parseInt(document.getElementById('finding-select')?.value ?? '0');
-  vscode.postMessage({
-    type: 'resolve',
-    resolution,
-    createSignature: createSig,
-    aiSignatureReview: aiSigReview,
-    finding: findings[idx] ?? null
-  });
+  try {
+    const resolution = document.getElementById('resolution').value.trim();
+    if (!resolution) { alert('Please describe the resolution.'); return; }
+    const createSig = document.getElementById('create-sig')?.checked ?? false;
+    const aiSigReview = document.getElementById('ai-sig-review')?.checked ?? false;
+    const idx = parseInt(document.getElementById('finding-select')?.value ?? '0');
+    const btn = document.getElementById('resolve-btn');
+    if (btn) btn.disabled = true;
+    const el = document.getElementById('resolve-error');
+    if (el) el.style.display = 'none';
+    vscode.postMessage({
+      type: 'resolve',
+      resolution,
+      createSignature: createSig,
+      aiSignatureReview: aiSigReview,
+      finding: findings[idx] ?? null
+    });
+  } catch (err) {
+    const el = document.getElementById('resolve-error');
+    if (el) {
+      el.textContent = 'Could not submit the resolution (' + err + '). Your text is still in the box above - copy it somewhere safe before retrying.';
+      el.style.display = 'block';
+    }
+  }
 }
 function cancel() { vscode.postMessage({type:'cancel'}); }
 </script>

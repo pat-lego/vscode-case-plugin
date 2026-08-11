@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
   const closedCasesProvider = new ClosedCasesProvider(caseManager);
   const sigProvider         = new SignatureProvider(sigService);
   const webview             = new InvestigationWebview(
-    context, caseManager, analysisService, bridgeServer
+    context, caseManager, analysisService, bridgeServer, log
   );
 
   // Start bridge server (registered so it's stopped on extension deactivation)

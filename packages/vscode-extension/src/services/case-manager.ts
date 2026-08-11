@@ -191,9 +191,10 @@ export class CaseManager {
     return true;
   }
 
-  updateNotes(caseId: string, notes: string) {
+  /** Returns true if the notes were actually persisted (to disk or globalState), false if the write failed. */
+  updateNotes(caseId: string, notes: string): boolean {
     const session = this.sessions.get(caseId);
-    if (!session) return;
+    if (!session) return false;
     session.meta.notes = notes;
     session.meta.updatedAt = new Date();
     // Keep title in sync with the first heading in notes — this is how users
@@ -201,20 +202,19 @@ export class CaseManager {
     const heading = extractFirstHeading(notes);
     if (heading) session.meta.title = heading;
     this.log.debug('case-mgr', 'updateNotes', { caseId, notesLen: notes.length, titleFromHeading: heading ?? null });
-    if (session.readonly) {
-      this.writeObsidianNote(caseId);
-    } else {
-      this.save(caseId);
-    }
+    const ok = session.readonly ? this.writeObsidianNote(caseId) : this.save(caseId);
     this.onCaseUpdatedEmitter.fire(caseId);
+    return ok;
   }
 
-  updateTitle(caseId: string, title: string) {
+  /** Returns true if the title change was actually persisted, false if the write failed. */
+  updateTitle(caseId: string, title: string): boolean {
     const session = this.sessions.get(caseId);
-    if (!session) return;
+    if (!session) return false;
     session.meta.title = title;
     this.log.info('case-mgr', 'updateTitle', { caseId, title });
     session.meta.updatedAt = new Date();
+    let ok: boolean;
     if (session.readonly) {
       // For Obsidian notes, update the heading inside the notes body so the
       // two stay in sync, then write back without adding YAML frontmatter.
@@ -223,26 +223,29 @@ export class CaseManager {
       } else {
         session.meta.notes = `# ${title}`;
       }
-      this.writeObsidianNote(caseId);
+      ok = this.writeObsidianNote(caseId);
     } else {
-      this.save(caseId);
+      ok = this.save(caseId);
     }
     this.onCaseUpdatedEmitter.fire(caseId);
     this.onActiveChangeEmitter.fire(this.activeCaseId);
+    return ok;
   }
 
-  resolveCase(caseId: string, resolution: string, resolvedBy: string) {
+  /** Returns true if the resolution was actually persisted to disk, false if the write failed. */
+  resolveCase(caseId: string, resolution: string, resolvedBy: string): boolean {
     const session = this.sessions.get(caseId);
-    if (!session) return;
+    if (!session) return false;
     session.meta.status = 'resolved';
     session.meta.resolution = resolution;
     session.meta.resolvedBy = resolvedBy;
     this.log.info('case-mgr', 'resolveCase', { caseId, resolvedBy, readonly: session.readonly ?? false });
     session.meta.updatedAt = new Date();
     if (session.readonly) session.readonly = false;
-    this.save(caseId);
+    const ok = this.save(caseId);
     this.onCaseUpdatedEmitter.fire(caseId);
     this.onActiveChangeEmitter.fire(this.activeCaseId);
+    return ok;
   }
 
   reopenCase(caseId: string) {
@@ -361,24 +364,28 @@ export class CaseManager {
 
   // ── Disk persistence ──────────────────────────────────────────────────────
 
-  private save(caseId: string) {
+  /** Returns true if the case was actually persisted (disk or globalState), false otherwise. */
+  private save(caseId: string): boolean {
     const session = this.sessions.get(caseId);
     if (!session || session.readonly) {
       this.log.debug('case-mgr', 'save skipped', { caseId, reason: !session ? 'no session' : 'readonly' });
-      return;
+      return false;
     }
 
     if (session.casePath) {
       this.log.debug('case-mgr', 'save → disk', { caseId, casePath: session.casePath });
       try {
         this.writeToDisk(caseId, session.casePath);
+        return true;
       } catch (err) {
         this.log.error('case-mgr', 'writeToDisk failed', { caseId, error: String(err) });
         vscode.window.showWarningMessage(`Incident Investigator: could not write case to disk — ${err}`);
+        return false;
       }
     } else {
       this.log.debug('case-mgr', 'save → globalState', { caseId });
       this.persistToGlobalState();
+      return true;
     }
   }
 
@@ -518,9 +525,9 @@ export class CaseManager {
    * (heading + content), so we write it verbatim. Only called for readonly
    * (Obsidian) cases where `save()` would otherwise be a no-op.
    */
-  private writeObsidianNote(caseId: string) {
+  private writeObsidianNote(caseId: string): boolean {
     const session = this.sessions.get(caseId);
-    if (!session || !session.casePath) return;
+    if (!session || !session.casePath) return false;
 
     const caseDir = path.join(session.casePath, caseId);
     const mdPath = path.join(caseDir, `${caseId}.md`);
@@ -528,8 +535,11 @@ export class CaseManager {
 
     try {
       fs.writeFileSync(mdPath, content, 'utf-8');
+      return true;
     } catch (err) {
+      this.log.error('case-mgr', 'writeObsidianNote failed', { caseId, error: String(err) });
       vscode.window.showWarningMessage(`Incident Investigator: could not write note to disk — ${err}`);
+      return false;
     }
   }
 

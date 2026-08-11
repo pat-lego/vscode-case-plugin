@@ -5,16 +5,19 @@ import * as crypto from 'crypto';
 import { CaseManager } from '../services/case-manager';
 import { AnalysisService } from '../services/analysis-service';
 import { BridgeServer } from '../services/bridge-server';
+import { IILogger, nullLogger } from '../logger';
 
 export class InvestigationWebview {
   private panels = new Map<string, vscode.WebviewPanel>();
   private knownEvidenceIds = new Map<string, Set<string>>();
+  private lastErrorToastAt = 0;
 
   constructor(
     private context: vscode.ExtensionContext,
     private caseManager: CaseManager,
     private analysisService: AnalysisService,
-    private bridgeServer: BridgeServer
+    private bridgeServer: BridgeServer,
+    private log: IILogger = nullLogger
   ) {
     this.caseManager.onFindingsChange(({ caseId, findings }) => {
       this.panels.get(caseId)?.webview.postMessage({ type: 'findings', findings });
@@ -125,7 +128,37 @@ export class InvestigationWebview {
     this.panels.get(caseId)?.webview.postMessage({ type: 'evidenceAdded', item });
   }
 
+  /**
+   * Thin safety net around handleMessageUnsafe: any exception thrown or rejected while
+   * handling a webview message — including bugs we haven't anticipated — is caught here
+   * so it never disappears as a silent unhandled rejection. The user is always told when
+   * something went wrong instead of the panel quietly continuing in a broken state.
+   */
   private async handleMessage(caseId: string, msg: Record<string, unknown>) {
+    try {
+      await this.handleMessageUnsafe(caseId, msg);
+    } catch (err) {
+      const msgType = String(msg.type ?? 'unknown');
+      this.log.error('investigation-webview', 'unhandled error processing webview message', { caseId, msgType, error: String(err) });
+      this.panels.get(caseId)?.webview.postMessage({ type: 'hostError', context: msgType, message: String(err) });
+      this.notifyFailure(
+        `Incident Investigator hit an unexpected error handling "${msgType}" for case ${caseId}. ` +
+        `If you were editing notes, copy them somewhere safe until this is resolved. See the "Incident Investigator" Output panel for details.`
+      );
+    }
+  }
+
+  /** Throttled so a burst of failures doesn't spam the user with repeated modal-less error toasts. */
+  private notifyFailure(message: string) {
+    const now = Date.now();
+    if (now - this.lastErrorToastAt < 3000) return;
+    this.lastErrorToastAt = now;
+    vscode.window.showErrorMessage(message, 'Show Logs').then(choice => {
+      if (choice === 'Show Logs') vscode.commands.executeCommand('workbench.action.output.toggleOutput');
+    });
+  }
+
+  private async handleMessageUnsafe(caseId: string, msg: Record<string, unknown>) {
     const panel = this.panels.get(caseId);
     if (!panel) return;
 
@@ -151,6 +184,19 @@ export class InvestigationWebview {
           findings: session.findings,
           notes: session.meta.notes ?? ''
         });
+        break;
+      }
+
+      case 'clientError': {
+        // Reported by the webview's window.onerror/unhandledrejection handlers so a JS
+        // exception in the panel is never silent — it always lands in the Output panel
+        // and (throttled) as a visible toast, even if the user never notices the in-panel banner.
+        const detail = String(msg.message ?? 'Unknown client error');
+        this.log.error('investigation-webview', 'client-side error reported', { caseId, detail, stack: msg.stack ? String(msg.stack) : undefined });
+        this.notifyFailure(
+          `Incident Investigator: the case panel for ${caseId} hit an error (${detail}). ` +
+          `Check that your last notes edit saved (look for "NOT SAVED" in the Notes header) before continuing.`
+        );
         break;
       }
 
@@ -368,13 +414,41 @@ export class InvestigationWebview {
         break;
       }
 
-      case 'saveNotes':
-        this.caseManager.updateNotes(caseId, String(msg.notes ?? ''));
+      case 'saveNotes': {
+        const notesText = String(msg.notes ?? '');
+        let ok = false;
+        let error: string | undefined;
+        try {
+          ok = this.caseManager.updateNotes(caseId, notesText);
+        } catch (err) {
+          error = String(err);
+          this.log.error('investigation-webview', 'saveNotes threw', { caseId, error });
+        }
+        if (!ok && !error) error = 'Notes could not be written to disk.';
+        panel.webview.postMessage({ type: 'notesSaveResult', ok, error });
+        if (!ok) {
+          this.notifyFailure(
+            `Incident Investigator: your latest notes for ${caseId} failed to save (${error}). ` +
+            `The text is still visible in the panel — copy it somewhere safe and check disk space/permissions for the case folder.`
+          );
+        }
         break;
+      }
 
-      case 'saveTitle':
-        this.caseManager.updateTitle(caseId, String(msg.title ?? ''));
+      case 'saveTitle': {
+        let ok = false;
+        let error: string | undefined;
+        try {
+          ok = this.caseManager.updateTitle(caseId, String(msg.title ?? ''));
+        } catch (err) {
+          error = String(err);
+          this.log.error('investigation-webview', 'saveTitle threw', { caseId, error });
+        }
+        if (!ok) {
+          this.notifyFailure(`Incident Investigator: could not save the title change for ${caseId}${error ? ` (${error})` : ''}.`);
+        }
         break;
+      }
 
       case 'reopenCase':
         this.caseManager.reopenCase(caseId);
@@ -728,6 +802,7 @@ body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);col
 .save-indicator{font-size:9px;color:var(--vscode-descriptionForeground);opacity:0;transition:opacity .3s;padding-right:4px;cursor:default;text-transform:none;letter-spacing:0;font-weight:400}
 .save-indicator.show{opacity:1}
 .save-indicator.unsaved{opacity:1;color:var(--vscode-problemsWarningIcon-foreground,#cca700);transition:none}
+.save-indicator.failed{opacity:1;color:var(--vscode-errorForeground,#f14c4c);font-weight:700;transition:none;cursor:pointer;text-decoration:underline dotted}
 .add-btn{display:flex;align-items:center;justify-content:center;gap:5px;padding:7px;border:1px dashed var(--vscode-panel-border);border-radius:3px;font-size:11px;color:var(--vscode-descriptionForeground);cursor:pointer;background:none;width:100%;margin-bottom:6px}
 .add-btn:hover{border-color:var(--vscode-focusBorder);color:var(--vscode-foreground)}
 .ev-drop-active{outline:2px dashed var(--vscode-focusBorder);outline-offset:-3px}
@@ -882,9 +957,18 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 .export-area{flex:1;resize:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:none;padding:10px 12px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.6;min-height:320px;outline:none}
 .recovery-banner{display:none;align-items:center;gap:8px;padding:5px 12px;background:var(--vscode-inputValidation-warningBackground,#2d2600);border-bottom:1px solid var(--vscode-inputValidation-warningBorder,#cca700);font-size:11px;flex-shrink:0}
 .recovery-banner.visible{display:flex}
+.error-banner{display:none;align-items:center;gap:8px;padding:5px 12px;background:var(--vscode-inputValidation-errorBackground,#5a1d1d);border-bottom:1px solid var(--vscode-inputValidation-errorBorder,#be1100);font-size:11px;flex-shrink:0;color:var(--vscode-foreground)}
+.error-banner.visible{display:flex}
+.error-banner .error-banner-msg{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 </head>
 <body>
+<div class="error-banner" id="error-banner">
+  <span>&#9888;&nbsp;<strong>Something went wrong in this panel.</strong>&nbsp;<span class="error-banner-msg" id="error-banner-msg"></span></span>
+  <button class="btn" id="error-banner-save-btn" style="font-size:10px;padding:2px 8px">Save Notes Now</button>
+  <button class="btn" id="error-banner-copy-btn" style="font-size:10px;padding:2px 8px">Copy Notes</button>
+  <button class="btn" id="error-banner-dismiss-btn" style="font-size:10px;padding:2px 8px">Dismiss</button>
+</div>
 <div class="recovery-banner" id="recovery-banner">
   <span>&#9888;&nbsp;Unsaved notes from a previous session were detected.</span>
   <button class="btn" id="recovery-restore-btn" style="font-size:10px;padding:2px 8px">Restore</button>
@@ -1007,15 +1091,68 @@ mark.active-match{background:#cca700;color:#1e1e1e;border-radius:1px}
 </div>
 
 <script nonce="${nonce}">
-// Show any JS error visibly so it can be diagnosed
-window.onerror = function(msg, src, line) {
-  var banner = document.createElement('div');
-  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#f14c4c;color:#fff;padding:6px 10px;font-size:11px;z-index:99999;font-family:monospace;white-space:pre-wrap';
-  banner.textContent = 'JS Error (line ' + line + '): ' + msg;
-  document.body.appendChild(banner);
-};
-
 const vscode = acquireVsCodeApi();
+function send(type, extra) { vscode.postMessage(Object.assign({type}, extra||{})); }
+
+// -- Global error reporting ------------------------------------------------------
+// Any uncaught JS error or rejected promise in this panel must never fail silently:
+// it is (a) forwarded to the extension host so it lands in the "Incident Investigator"
+// Output panel for diagnosis, and (b) shown as a sticky, dismiss-required banner with a
+// one-click "Save Notes Now" so the user can immediately confirm nothing was lost.
+var lastClientErrorAt = 0;
+function reportClientError(message, stack) {
+  try { showErrorBanner(String(message)); } catch (e) { /* DOM itself may be broken */ }
+  try {
+    var now = Date.now();
+    if (now - lastClientErrorAt > 500) { // don't flood the host on an error storm
+      lastClientErrorAt = now;
+      send('clientError', { message: String(message), stack: stack ? String(stack) : undefined });
+    }
+  } catch (e) { /* messaging channel itself is broken - nothing more we can do from here */ }
+}
+
+function showErrorBanner(message) {
+  var banner = document.getElementById('error-banner');
+  var msgEl = document.getElementById('error-banner-msg');
+  if (!banner) return;
+  if (msgEl) msgEl.textContent = message;
+  banner.classList.add('visible');
+}
+
+window.onerror = function(msg, src, line, col, err) {
+  reportClientError(msg + ' (line ' + line + ')', err && err.stack);
+  return false;
+};
+window.addEventListener('unhandledrejection', function(evt) {
+  var reason = evt && evt.reason;
+  var reasonMsg = reason && reason.message ? reason.message : String(reason);
+  reportClientError('Unhandled promise rejection: ' + reasonMsg, reason && reason.stack);
+});
+
+(function wireErrorBanner() {
+  var saveBtn = document.getElementById('error-banner-save-btn');
+  var copyBtn = document.getElementById('error-banner-copy-btn');
+  var dismissBtn = document.getElementById('error-banner-dismiss-btn');
+  if (saveBtn) saveBtn.addEventListener('click', function() {
+    try { doSaveNotes(); } catch (e) { reportClientError('Manual save failed: ' + e); }
+  });
+  if (copyBtn) copyBtn.addEventListener('click', function() {
+    try {
+      var ta = document.getElementById('notes-area');
+      var text = ta ? ta.value : '';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
+      } else {
+        fallbackCopy(text);
+      }
+    } catch (e) { reportClientError('Copy notes failed: ' + e); }
+  });
+  if (dismissBtn) dismissBtn.addEventListener('click', function() {
+    var banner = document.getElementById('error-banner');
+    if (banner) banner.classList.remove('visible');
+  });
+})();
+
 let items = [];
 var _recoveryNotes = '';
 var groupEls = {}; // groupName -> group container element
@@ -1481,7 +1618,8 @@ document.getElementById('workspace').addEventListener('click', function(e) {
 try { loadLayout(); } catch(e) { /* stale state - ignore, use defaults */ }
 
 // -- Messaging -----------------------------------------------------------------
-function send(type, extra) { vscode.postMessage(Object.assign({type}, extra||{})); }
+// send() is defined near the top of this script, alongside the error-reporting
+// setup, so reportClientError() can use it before this point in the file runs.
 
 window.addEventListener('message', function(evt) {
   var m = evt.data;
@@ -1556,15 +1694,78 @@ window.addEventListener('message', function(evt) {
     if (refsInput && refsInput.value) runEmbRefSearch();
     capEmbRefsHeight();
   }
+  else if (m.type === 'notesSaveResult') {
+    notesSaveInFlight = false;
+    clearTimeout(notesSaveTimer);
+    if (m.ok) { setSaveIndicator('saved'); }
+    else { setSaveIndicator('failed', m.error || 'Extension could not write the case file.'); }
+  }
+  else if (m.type === 'hostError') {
+    reportClientError('Extension error while handling "' + m.context + '": ' + m.message);
+  }
 });
 
-function doSaveNotes() {
-  var notes = document.getElementById('notes-area').value;
-  send('saveNotes', { notes: notes });
-  try { var _sv = vscode.getState() || {}; _sv.notes = notes; _sv.notesSavedAt = Date.now(); vscode.setState(_sv); } catch(e) {}
+// -- Notes saving: ack-based, never lies about save state -----------------------
+// The indicator only ever says "Saved" once the extension host has confirmed the
+// write actually happened. If no confirmation arrives, or the host reports a
+// failure, the indicator turns into a persistent, clickable "NOT SAVED" state and
+// a sticky banner explains what to do - the user is never left assuming their
+// notes are safe when they aren't. vscode.setState() below is a best-effort local
+// cache used only for crash/reload recovery (see the recovery-banner logic above);
+// it is never treated as proof of a successful save.
+var notesSaveTimer = null;
+var notesSaveInFlight = false;
+var NOTES_SAVE_TIMEOUT_MS = 5000;
+
+function setSaveIndicator(state, detail) {
   var ind = document.getElementById('save-indicator');
-  if (ind) { ind.classList.remove('unsaved'); ind.textContent = 'Saved'; ind.classList.add('show'); setTimeout(function() { ind.classList.remove('show'); }, 1200); }
+  if (!ind) return;
+  ind.classList.remove('unsaved', 'show', 'failed');
+  if (state === 'saving') {
+    ind.textContent = 'Saving...';
+    ind.classList.add('show');
+  } else if (state === 'saved') {
+    ind.textContent = 'Saved';
+    ind.classList.add('show');
+    setTimeout(function() { ind.classList.remove('show'); }, 1200);
+  } else if (state === 'failed') {
+    ind.textContent = 'NOT SAVED - click to retry';
+    ind.classList.add('show', 'failed');
+    if (detail) showErrorBanner('Notes failed to save: ' + detail);
+  }
 }
+
+function doSaveNotes() {
+  var ta = document.getElementById('notes-area');
+  if (!ta) { reportClientError('doSaveNotes: notes-area element is missing from the DOM'); return; }
+  var notes = ta.value;
+
+  var sent = false;
+  try { send('saveNotes', { notes: notes }); sent = true; }
+  catch (e) { reportClientError('Failed to send notes to the extension: ' + e); }
+
+  // Local cache for crash/reload recovery only - never a substitute for a confirmed disk write.
+  try { var _sv = vscode.getState() || {}; _sv.notes = notes; _sv.notesSavedAt = Date.now(); vscode.setState(_sv); }
+  catch (e) { reportClientError('Failed to cache notes locally: ' + e); }
+
+  if (!sent) { setSaveIndicator('failed', 'Could not reach the extension host.'); return; }
+
+  setSaveIndicator('saving');
+  notesSaveInFlight = true;
+  clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(function() {
+    if (!notesSaveInFlight) return;
+    notesSaveInFlight = false;
+    setSaveIndicator('failed', 'No confirmation received from the extension after ' + (NOTES_SAVE_TIMEOUT_MS / 1000) + 's.');
+  }, NOTES_SAVE_TIMEOUT_MS);
+}
+
+(function wireSaveIndicatorRetry() {
+  var ind = document.getElementById('save-indicator');
+  if (ind) ind.addEventListener('click', function() {
+    if (ind.classList.contains('failed')) doSaveNotes();
+  });
+})();
 
 document.getElementById('notes-area').addEventListener('input', function() {
   // Write straight through to the MD file on every keystroke - no debounce,
