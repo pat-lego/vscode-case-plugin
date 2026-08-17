@@ -4,7 +4,9 @@ export interface QueryResult {
   rows: QueryRow[];
   totalMatched: number;
   error?: string;
-  /** Matched Thread objects, only populated for non-stats (raw list) queries. */
+  /** Matched Thread objects, parallel to `rows`. Populated for raw-list queries and
+   *  for pipelines using only row-preserving commands (dedup, top); absent once the
+   *  pipeline aggregates rows (stats, count), since rows no longer map 1:1 to threads. */
   threads?: Thread[];
 }
 
@@ -15,7 +17,8 @@ type FilterFn = (t: Thread) => boolean;
 interface StatsCommand { type: 'stats'; fields: string[] }
 interface CountCommand { type: 'count' }
 interface TopCommand   { type: 'top';   n: number }
-type Command = StatsCommand | CountCommand | TopCommand;
+interface DedupCommand { type: 'dedup'; fields: string[] }
+type Command = StatsCommand | CountCommand | TopCommand | DedupCommand;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -35,12 +38,20 @@ type Command = StatsCommand | CountCommand | TopCommand;
  *   frame=*HikariPool*         glob match on any stack frame
  *   keyframe=*dao*             glob match on the first non-JVM frame
  *   stackdepth>=10             numeric comparison on frame count
+ *   url=*recipes.detail*       glob match on the request URL/path parsed from the thread
+ *                              name (e.g. "45.43.155.63 [ts] GET /content/foo.html HTTP/1.1")
  *
  * Comparison operators for numeric fields: >  >=  <  <=  !=
  * String inequality: state!=RUNNABLE
  *
  * Row fields (available in stats and returned for raw results):
- *   thread | state | topframe | keyframe | class | package | method | stackdepth
+ *   thread | state | topframe | keyframe | class | package | method | stackdepth | url
+ *
+ * dedup field[,field2,...]  — drop rows whose field value(s) repeat, keeping the
+ *                             first occurrence of each unique combination. Rows
+ *                             where the field is absent (e.g. url on a thread with
+ *                             no embedded request line) are never deduped against
+ *                             each other — only rows that share an actual value collapse.
  *
  * Examples:
  *   state=BLOCKED | stats count by keyframe
@@ -50,6 +61,8 @@ type Command = StatsCommand | CountCommand | TopCommand;
  *   stackdepth>=10 AND state!=RUNNABLE | stats count by keyframe
  *   thread=*b2c* | stats count
  *   | stats count by state
+ *   state=BLOCKED | dedup url                  -- one row per unique blocked URL
+ *   state=BLOCKED | dedup url | stats count     -- count of unique blocked URLs
  */
 export function executeQuery(threads: Thread[], query: string): QueryResult {
   try {
@@ -59,7 +72,7 @@ export function executeQuery(threads: Thread[], query: string): QueryResult {
     const filterFns: FilterFn[] = [];
     for (const stage of stages) {
       const lower = stage.toLowerCase();
-      if (lower.startsWith('stats ') || lower === 'stats count' || lower.startsWith('top ')) {
+      if (lower.startsWith('stats ') || lower === 'stats count' || lower.startsWith('top ') || lower.startsWith('dedup ')) {
         commands.push(parseCommand(stage));
       } else {
         // strip optional leading "where" keyword (Splunk-style)
@@ -78,13 +91,28 @@ export function executeQuery(threads: Thread[], query: string): QueryResult {
     }
 
     let rows: QueryRow[] = matched.map(threadToRow);
+    // Parallel to `rows` — the Thread each row came from. Cleared once a command
+    // aggregates rows (stats/count), since rows stop mapping 1:1 to threads.
+    let rowThreads: Thread[] | undefined = matched;
+
     for (const cmd of commands) {
-      if (cmd.type === 'stats')  rows = applyStats(rows, cmd.fields);
-      else if (cmd.type === 'count') rows = [{ count: rows.length }];
-      else if (cmd.type === 'top')   rows = rows.slice(0, cmd.n);
+      if (cmd.type === 'stats') {
+        rows = applyStats(rows, cmd.fields);
+        rowThreads = undefined;
+      } else if (cmd.type === 'count') {
+        rows = [{ count: rows.length }];
+        rowThreads = undefined;
+      } else if (cmd.type === 'top') {
+        rows = rows.slice(0, cmd.n);
+        rowThreads = rowThreads?.slice(0, cmd.n);
+      } else if (cmd.type === 'dedup') {
+        const keepIdx = dedupKeepIndices(rows, cmd.fields);
+        rows = keepIdx.map(i => rows[i]);
+        rowThreads = rowThreads && keepIdx.map(i => rowThreads![i]);
+      }
     }
 
-    return { rows, totalMatched: matched.length };
+    return { rows, totalMatched: matched.length, threads: rowThreads };
   } catch (e) {
     return { rows: [], totalMatched: 0, error: String(e) };
   }
@@ -197,8 +225,17 @@ function getScalar(t: Thread, field: string): string | undefined {
     case 'stackdepth': return String(t.frames.length);
     case 'elapsed':    return t.elapsed !== undefined ? String(t.elapsed) : undefined;
     case 'nid':        return t.nid;
+    case 'url':        return extractUrl(t.name);
     default:           return undefined;
   }
+}
+
+// Matches the request line embedded in a thread's name, e.g.
+// "45.43.155.63 [1786368959139] GET /content/foo/bar.html HTTP/1.1"
+const HTTP_METHOD_PATH = /\b(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\/\S*)/;
+
+function extractUrl(name: string): string | undefined {
+  return name.match(HTTP_METHOD_PATH)?.[1];
 }
 
 function globToRegex(pattern: string): RegExp {
@@ -232,6 +269,12 @@ function parseCommand(stage: string): Command {
     return { type: 'top', n: parseInt(topMatch[1], 10) };
   }
 
+  const dedupMatch = lower.match(/^dedup\s+(.+)$/);
+  if (dedupMatch) {
+    const fields = dedupMatch[1].split(',').map(f => f.trim().toLowerCase());
+    return { type: 'dedup', fields };
+  }
+
   throw new Error(`Unknown command: "${stage}"`);
 }
 
@@ -260,6 +303,36 @@ function applyStats(rows: QueryRow[], fields: string[]): QueryRow[] {
 }
 
 // ---------------------------------------------------------------------------
+// Dedup
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the indices (into `rows`) to keep: the first row seen for each unique
+ * combination of field values. Rows missing one of the fields entirely (e.g. `url`
+ * on a thread with no embedded request line) are always kept — they never dedup
+ * against each other, since treating "no value" as a shared value would silently
+ * collapse unrelated threads down to one.
+ */
+function dedupKeepIndices(rows: QueryRow[], fields: string[]): number[] {
+  const seen = new Set<string>();
+  const kept: number[] = [];
+
+  rows.forEach((row, i) => {
+    if (fields.some(f => row[f] === undefined)) {
+      kept.push(i);
+      return;
+    }
+    const key = fields.map(f => String(row[f])).join('\0');
+    if (!seen.has(key)) {
+      seen.add(key);
+      kept.push(i);
+    }
+  });
+
+  return kept;
+}
+
+// ---------------------------------------------------------------------------
 // Thread → row projection and frame field extraction
 // ---------------------------------------------------------------------------
 
@@ -276,6 +349,8 @@ function threadToRow(t: Thread): QueryRow {
   };
   if (t.elapsed !== undefined) row.elapsed = t.elapsed;
   if (t.nid     !== undefined) row.nid     = t.nid;
+  const url = extractUrl(t.name);
+  if (url !== undefined) row.url = url;
   return row;
 }
 

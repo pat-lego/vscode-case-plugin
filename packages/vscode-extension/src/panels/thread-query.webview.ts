@@ -297,15 +297,17 @@ function buildHtml(_context: vscode.ExtensionContext, _webview: vscode.Webview):
   <code>frame=*HikariPool*</code> &nbsp;
   <code>stackdepth&gt;=10</code> &nbsp;
   <code>elapsed&gt;=60</code> &nbsp;
-  <code>nid=0x3a8e</code>
+  <code>nid=0x3a8e</code> &nbsp;
+  <code>url=*recipes.detail*</code>
   <br>
   <strong>Stats:</strong>
   <code>| stats count by state</code> &nbsp;
   <code>| stats count by keyframe</code> &nbsp;
   <code>| stats count by class</code> &nbsp;
   <code>| stats count</code> &nbsp;
-  <code>| top 10</code>
-  &nbsp;&nbsp;<strong>Fields:</strong> state &bull; thread &bull; frame &bull; keyframe &bull; class &bull; method &bull; stackdepth &bull; elapsed &bull; nid
+  <code>| top 10</code> &nbsp;
+  <code>| dedup url</code>
+  &nbsp;&nbsp;<strong>Fields:</strong> state &bull; thread &bull; frame &bull; keyframe &bull; class &bull; method &bull; stackdepth &bull; elapsed &bull; nid &bull; url
 </div>
 
 <div id="error-msg" style="display:none"></div>
@@ -327,9 +329,9 @@ const qHighlight = document.getElementById('query-highlight');
 
 // Tokenise query string and return highlighted HTML
 function highlightQuery(raw) {
-  const CMDS   = new Set(['STATS','COUNT','BY','TOP']);
+  const CMDS   = new Set(['STATS','COUNT','BY','TOP','DEDUP']);
   const KWS    = new Set(['AND','OR','WHERE','IN','NOT']);
-  const FIELDS = new Set(['state','thread','frame','keyframe','topframe','class','package','method','stackdepth','elapsed','nid']);
+  const FIELDS = new Set(['state','thread','frame','keyframe','topframe','class','package','method','stackdepth','elapsed','nid','url']);
   const out = [];
   let i = 0;
   while (i < raw.length) {

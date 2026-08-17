@@ -193,6 +193,120 @@ describe('executeQuery — top N', () => {
   });
 });
 
+describe('executeQuery — url field', () => {
+  const mkReqThread = (name: string, state: Thread['state']): Thread => ({
+    name, state, frames: [], topFrame: '', keyFrame: '', monitorLines: [], lockedMonitors: [],
+  });
+
+  const REQ_THREADS: Thread[] = [
+    mkReqThread('45.43.155.63 [1786368959139] GET /content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.2 [1786368959200] GET /content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.3 [1786368959300] GET /content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.4 [1786368959400] GET /content/lamb-weston/en-us/other-page.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.5 [1786368959500] GET /content/lamb-weston/en-us/other-page.html HTTP/1.1', 'WAITING'),
+    mkReqThread('background-worker', 'BLOCKED'),
+  ];
+
+  it('extracts the request path from the thread name into the url field', () => {
+    const r = executeQuery(REQ_THREADS, 'thread=*recipes.detail*');
+    expect(r.rows[0].url).toBe('/content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html');
+  });
+
+  it('url is undefined for threads with no embedded request line', () => {
+    const r = executeQuery(REQ_THREADS, 'thread=background-worker');
+    expect(r.rows[0].url).toBeUndefined();
+  });
+
+  it('url= glob filters by request path', () => {
+    expect(executeQuery(REQ_THREADS, 'url=*recipes.detail*').totalMatched).toBe(3);
+  });
+});
+
+describe('executeQuery — dedup', () => {
+  const mkReqThread = (name: string, state: Thread['state']): Thread => ({
+    name, state, frames: [], topFrame: '', keyFrame: '', monitorLines: [], lockedMonitors: [],
+  });
+
+  const REQ_THREADS: Thread[] = [
+    mkReqThread('45.43.155.63 [1] GET /content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.2 [2] GET /content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.3 [3] GET /content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.4 [4] GET /content/lamb-weston/en-us/other-page.html HTTP/1.1', 'BLOCKED'),
+    mkReqThread('10.0.0.5 [5] GET /content/lamb-weston/en-us/other-page.html HTTP/1.1', 'WAITING'),
+  ];
+
+  it('dedup url collapses rows sharing the same URL, keeping the first occurrence', () => {
+    const r = executeQuery(REQ_THREADS, 'state=BLOCKED | dedup url');
+    expect(r.rows).toHaveLength(2);
+    expect(r.rows[0].thread).toContain('45.43.155.63');
+    expect(r.rows.map(row => row.url)).toEqual([
+      '/content/lamb-weston/en-us/recipes.detail.sumac-yogurt-ranch-salt.html',
+      '/content/lamb-weston/en-us/other-page.html',
+    ]);
+  });
+
+  it('state=BLOCKED | dedup url | stats count reports the number of unique blocked URLs', () => {
+    const r = executeQuery(REQ_THREADS, 'state=BLOCKED | dedup url | stats count');
+    expect(r.rows[0].count).toBe(2);
+  });
+
+  it('totalMatched still reflects the pre-dedup filtered count', () => {
+    const r = executeQuery(REQ_THREADS, 'state=BLOCKED | dedup url');
+    expect(r.totalMatched).toBe(4);
+  });
+
+  it('dedup on multiple fields dedupes by the compound key', () => {
+    const r = executeQuery(REQ_THREADS, '| dedup url, state');
+    // (recipes.detail, BLOCKED), (other-page, BLOCKED), (other-page, WAITING)
+    expect(r.rows).toHaveLength(3);
+  });
+
+  it('dedup with no matches returns an empty row set', () => {
+    const r = executeQuery(REQ_THREADS, 'state=RUNNABLE | dedup url');
+    expect(r.rows).toHaveLength(0);
+  });
+
+  it('does not collapse threads that all lack the dedup field into a single row', () => {
+    // None of these have an embedded HTTP request line, so `url` is undefined for all.
+    const threads = [
+      mkReqThread('background-worker-1', 'BLOCKED'),
+      mkReqThread('background-worker-2', 'BLOCKED'),
+      mkReqThread('background-worker-3', 'BLOCKED'),
+    ];
+    const r = executeQuery(threads, 'state=BLOCKED | dedup url');
+    expect(r.rows).toHaveLength(3);
+  });
+
+  it('rows missing the dedup field are kept alongside deduped rows that have it', () => {
+    const threads = [
+      ...REQ_THREADS,
+      mkReqThread('background-worker', 'BLOCKED'),
+    ];
+    const r = executeQuery(threads, 'state=BLOCKED | dedup url');
+    // 2 unique urls among blocked + 1 thread with no url at all
+    expect(r.rows).toHaveLength(3);
+  });
+
+  it('exposes the underlying threads (for stack frame display) after dedup', () => {
+    const r = executeQuery(REQ_THREADS, 'state=BLOCKED | dedup url');
+    expect(r.threads).toHaveLength(2);
+    expect(r.threads?.[0].name).toContain('45.43.155.63');
+  });
+
+  it('exposes the underlying threads after top N', () => {
+    const r = executeQuery(REQ_THREADS, 'state=BLOCKED | top 1');
+    expect(r.threads).toHaveLength(1);
+  });
+
+  it('does not expose threads once rows have been aggregated by stats/count', () => {
+    const r1 = executeQuery(REQ_THREADS, 'state=BLOCKED | dedup url | stats count');
+    expect(r1.threads).toBeUndefined();
+
+    const r2 = executeQuery(REQ_THREADS, 'state=BLOCKED | dedup url | stats count by url');
+    expect(r2.threads).toBeUndefined();
+  });
+});
+
 describe('executeQuery — error handling', () => {
   it('returns error for unparseable predicate', () => {
     const r = executeQuery(THREADS, 'badfield%%%');
